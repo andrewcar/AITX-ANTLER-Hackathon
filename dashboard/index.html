@@ -6,82 +6,172 @@
 <title>VulnSwarm Dashboard</title>
 <style>
   :root {
-    --bg:#0f1115; --panel:#14171d; --line:#2a2e36; --fg:#e6e6e6; --muted:#9aa0a6;
+    --bg:#0c0e12; --panel:#14181f; --line:#2c323c; --fg:#f2f4f8; --muted:#a3aab4;
     --accent:#4f8cff; --ok:#5ee08a; --warn:#e8c35a; --rej:#9aa0a6;
     --hi:#ff6b6b; --med:#ffa94d; --low:#ffd43b; --info:#74c0fc;
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.5 system-ui,-apple-system,sans-serif; }
-  header { padding:14px 20px; border-bottom:1px solid var(--line);
-           display:flex; align-items:center; gap:12px; }
-  header h1 { font-size:16px; margin:0; font-weight:700; }
-  header .sub { color:var(--muted); font-size:12px; }
+         font:17px/1.45 system-ui,-apple-system,sans-serif; }
+  header { padding:16px 22px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:22px; margin:0; font-weight:800; letter-spacing:-.02em; }
+  header .sub { color:var(--muted); font-size:14px; }
   header .right { margin-left:auto; display:flex; gap:8px; align-items:center; }
-  main { max-width:1100px; margin:0 auto; padding:20px 16px; }
+  main { max-width:1240px; margin:0 auto; padding:22px 18px 48px; }
   input, button { font:inherit; }
   input { background:var(--panel); border:1px solid var(--line); color:var(--fg);
-          border-radius:6px; padding:8px; }
-  button { background:var(--accent); color:#fff; border:0; border-radius:6px;
-           padding:8px 12px; font-weight:600; cursor:pointer; }
-  button.ghost { background:var(--panel); border:1px solid var(--line); }
-  button:disabled { opacity:.5; cursor:default; }
+          border-radius:8px; padding:8px 10px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px;
+           padding:8px 14px; font-weight:700; cursor:pointer; }
+  button.ghost { background:var(--panel); border:1px solid var(--line); color:var(--fg); }
+  button:disabled { opacity:.45; cursor:default; }
   .muted { color:var(--muted); }
   .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
-  .card h3 { margin:0 0 2px; font-size:15px; }
-  .card .url { color:var(--muted); font-size:12px; word-break:break-all; margin-bottom:10px; }
-  .pill { display:inline-block; padding:1px 8px; border-radius:20px; font-size:11px;
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  .card.active-scan { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .card h3 { margin:0 0 2px; font-size:18px; }
+  .card .url { color:var(--muted); font-size:13px; word-break:break-all; margin-bottom:10px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:20px; font-size:12px;
           background:#1c2330; color:var(--muted); margin-bottom:8px; }
   .row { display:flex; gap:8px; align-items:center; }
-  .summary { display:flex; flex-wrap:wrap; gap:14px; background:var(--panel);
-             border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:14px 0; }
-  .stat b { font-size:18px; }
-  table { width:100%; border-collapse:collapse; margin-top:6px; }
-  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--muted); font-weight:600; font-size:12px; }
-  td.evi { color:var(--muted); font-size:12px; font-family:ui-monospace,monospace; word-break:break-word; }
-  tr.rejected { opacity:.5; }
-  .badge { display:inline-block; padding:1px 7px; border-radius:4px; font-size:11px; font-weight:700; }
+  .summary { display:flex; flex-wrap:wrap; gap:16px 22px; background:var(--panel);
+             border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:14px 0; }
+  .stat b { font-size:26px; font-variant-numeric:tabular-nums; }
+  table { width:100%; border-collapse:collapse; margin-top:6px; font-size:16px; }
+  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:700; font-size:13px; letter-spacing:.04em; text-transform:uppercase; }
+  td.evi { color:var(--muted); font-size:14px; font-family:ui-monospace,monospace; word-break:break-word; }
+  tr.rejected { opacity:.55; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
   .v-confirmed { background:#16351f; color:var(--ok); }
-  .v-unverified { background:#3a3320; color:var(--warn); }
+  .v-unverified, .v-pending { background:#3a3320; color:var(--warn); }
   .v-rejected { background:#23262d; color:var(--rej); text-decoration:line-through; }
-  .sev { font-weight:700; }
-  .sev-high { color:var(--hi); } .sev-medium { color:var(--med); }
-  .sev-low { color:var(--low); } .sev-info { color:var(--info); }
-  .src { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; }
-  .machines { color:var(--muted); font-size:12px; margin-top:10px; }
+  .sev { font-weight:800; }
+  .sev-high, .sev-critical { color:var(--hi); }
+  .sev-medium { color:var(--med); }
+  .sev-low { color:var(--low); }
+  .sev-info { color:var(--info); }
+  .src { font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; }
+  .machines { color:var(--muted); font-size:13px; margin-top:12px; }
   .hidden { display:none; }
-  .spin { color:var(--accent); }
   .err { color:var(--hi); }
   a { color:var(--accent); }
+
+  .theater { margin-top:22px; }
+  .theater-top { display:flex; align-items:flex-end; gap:16px; margin-bottom:14px; }
+  .target-name { font-size:28px; font-weight:800; letter-spacing:-.03em; margin:0; line-height:1.1; overflow-wrap:anywhere; }
+  .target-url { color:var(--muted); font-size:14px; word-break:break-all; }
+  .live-pill { display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:800;
+               letter-spacing:.14em; color:var(--hi); }
+  .live-dot { width:12px; height:12px; border-radius:50%; background:var(--hi);
+              box-shadow:0 0 12px var(--hi); animation:blink 1s infinite; }
+  .live-dot.done { background:var(--ok); box-shadow:none; animation:none; }
+  .live-dot.bad { background:var(--hi); box-shadow:none; animation:none; }
+  .clock { margin-left:auto; font-size:32px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:.04em; }
+  .phase-rail { display:flex; gap:8px; list-style:none; padding:0; margin:0 0 14px; }
+  .phase-rail li { flex:1; text-align:center; padding:12px 4px; border:1px solid var(--line);
+                   border-radius:10px; font-weight:800; letter-spacing:.08em; font-size:15px;
+                   color:var(--muted); background:var(--panel); }
+  .phase-rail li.active { color:#fff; border-color:var(--accent); background:#1a2744;
+                          box-shadow:0 0 24px rgba(79,140,255,.35); }
+  .phase-rail li.done { color:var(--ok); border-color:#1f4d34; background:#122218; }
+  .hero { min-height:148px; border:1px solid var(--line); border-radius:14px; padding:18px 20px;
+          background:var(--panel); margin-bottom:14px; }
+  .hero-kicker { font-size:14px; font-weight:800; letter-spacing:.16em; color:var(--accent); }
+  .hero-title { font-size:34px; font-weight:800; letter-spacing:-.03em; line-height:1.15; margin-top:4px; overflow-wrap:anywhere; }
+  .hero-sub { margin-top:6px; color:var(--muted); font-size:16px; }
+  .hero.tone-high, .hero.tone-critical { background:#2a1418; border-color:#ff6b6b; }
+  .hero.tone-high .hero-kicker, .hero.tone-critical .hero-kicker { color:var(--hi); }
+  .hero.tone-medium { background:#2a2012; border-color:#ffa94d; }
+  .hero.tone-medium .hero-kicker { color:var(--med); }
+  .hero.tone-low { background:#2a2612; border-color:#ffd43b; }
+  .hero.tone-low .hero-kicker { color:var(--low); }
+  .hero.tone-info { background:#12202a; border-color:#74c0fc; }
+  .hero.tone-info .hero-kicker { color:var(--info); }
+  .hero.tone-phase { background:#141a28; border-color:#4f8cff; }
+  .hero.tone-ok { background:#122218; border-color:#5ee08a; }
+  .hero.tone-ok .hero-kicker { color:var(--ok); }
+  .hero.tone-bad { background:#2a1216; border-color:#ff6b6b; }
+  .hero.tone-bad .hero-kicker { color:var(--hi); }
+  .lanes { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:14px; }
+  .lane { background:var(--panel); border:1px solid var(--line); border-left:5px solid var(--lane, var(--line));
+          border-radius:12px; padding:12px 14px; min-height:118px; }
+  .lane.running { background:#171c28; box-shadow:0 0 0 1px rgba(79,140,255,.35); }
+  .lane-wait { color:var(--muted); display:flex; align-items:center; border-left-color:var(--line); }
+  .lane-top { display:flex; align-items:baseline; gap:8px; }
+  .lane-name { font-size:20px; font-weight:800; letter-spacing:-.02em; }
+  .lane-count { margin-left:auto; font-size:22px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .lane-status { color:var(--muted); font-size:14px; margin-top:2px; min-height:1.2em; }
+  .lane.running .lane-status { color:var(--accent); font-weight:700; }
+  .lane-label { font-family:ui-monospace,monospace; font-size:13px; color:var(--fg); min-height:1.2em; margin-top:4px; }
+  .ticks { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; min-height:14px; }
+  .tick { width:12px; height:12px; border-radius:2px; background:#2a2e36; display:inline-block; }
+  .tick.running { background:var(--accent); animation:blink .8s infinite; }
+  .tick.done { background:#3d4654; }
+  .tick.hit.sev-high, .tick.hit.sev-critical { background:var(--hi); }
+  .tick.hit.sev-medium { background:var(--med); }
+  .tick.hit.sev-low { background:var(--low); }
+  .tick.hit.sev-info { background:var(--info); }
+  .tick.hit { background:var(--hi); }
+  .feed-head { display:flex; align-items:baseline; gap:10px; margin:4px 0 8px; }
+  .feed-head h3 { margin:0; font-size:18px; }
+  .feed-head b { font-size:22px; font-variant-numeric:tabular-nums; }
+  .feed { display:flex; flex-direction:column; gap:8px; max-height:min(440px, 42vh); overflow:auto; padding-right:4px; }
+  .feed-empty { color:var(--muted); padding:8px 2px 16px; }
+  .finding { background:var(--panel); border:1px solid var(--line); border-left:6px solid var(--line);
+             border-radius:12px; padding:12px 14px; animation:rise .35s ease; }
+  .finding.sev-high, .finding.sev-critical { border-left-color:var(--hi); }
+  .finding.sev-medium { border-left-color:var(--med); }
+  .finding.sev-low { border-left-color:var(--low); }
+  .finding.sev-info { border-left-color:var(--info); }
+  .finding-top { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .finding-who { margin-left:auto; color:var(--muted); font-size:14px; }
+  .finding-title { font-size:22px; font-weight:800; letter-spacing:-.02em; margin-top:4px; line-height:1.2; overflow-wrap:anywhere; }
+  .finding-evi, .finding-fix { color:var(--muted); font-size:15px; margin-top:2px;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .sev-tag { font-size:13px; font-weight:800; letter-spacing:.08em; padding:3px 8px; border-radius:4px; background:#1c2330; }
+  .dedupe { color:var(--muted); margin-top:10px; }
+  .report { margin-top:18px; }
+  .report:empty { display:none; }
+  .report h2 { font-size:20px; margin:0; }
+  @keyframes rise { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:none; } }
+  @keyframes blink { 50% { opacity:.35; } }
+  @media (max-width:900px) {
+    .lanes { grid-template-columns:1fr; }
+    .phase-rail { flex-wrap:wrap; }
+    .phase-rail li { flex:1 1 30%; }
+    .hero-title, .target-name { font-size:26px; }
+    .clock { font-size:24px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .live-dot, .tick.running, .finding { animation:none; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>VulnSwarm</h1><span class="sub">swarm dashboard</span>
+  <h1>VulnSwarm</h1><span class="sub">live swarm</span>
   <div class="right">
-    <input id="api" style="width:200px" />
+    <input id="api" style="width:220px" aria-label="Backend URL" />
     <span id="who" class="muted"></span>
-    <button id="logout" class="ghost hidden">logout</button>
+    <button id="logout" class="ghost hidden" type="button">logout</button>
   </div>
 </header>
 <main>
-  <!-- login -->
-  <section id="loginView" class="card" style="max-width:360px;margin-top:10px">
+  <section id="loginView" class="card" style="max-width:380px;margin-top:10px">
     <h3>Sign in</h3>
     <div class="muted" style="margin-bottom:8px">Connect to the swarm backend.</div>
     <div class="row" style="margin-bottom:8px"><input id="email" value="erwin@local" placeholder="email" style="flex:1"/></div>
     <div class="row" style="margin-bottom:10px"><input id="password" type="password" value="demo" placeholder="password" style="flex:1"/></div>
-    <button id="loginBtn">Sign in</button>
+    <button id="loginBtn" type="button">Sign in</button>
     <div id="loginMsg" class="err"></div>
   </section>
 
-  <!-- app -->
   <section id="appView" class="hidden">
     <div class="row" style="justify-content:space-between;margin-bottom:10px">
-      <h2 style="font-size:15px;margin:0">Targets</h2>
-      <button id="scanAll" class="ghost">Scan all</button>
+      <h2 style="font-size:18px;margin:0">Targets</h2>
+      <button id="scanAll" class="ghost" type="button">Scan all</button>
     </div>
     <div id="cards" class="cards"></div>
     <div id="result"></div>
@@ -89,21 +179,44 @@
 </main>
 <script>
 const DEFAULT_API = "http://10.0.0.32:8000";
+const PHASES = ["AUTH", "MAP", "PLAN", "SWARM", "VERIFY", "REPORT"];
+const PHASE_COPY = {
+  AUTH: ["Authenticating", "Logging in when this lab target has a known recipe"],
+  MAP: ["Mapping the surface", "Pages, forms, and parameters"],
+  PLAN: ["Planning the swarm", "Pairing each section with a specialist"],
+  SWARM: ["Swarm is running", "Specialists working in parallel"],
+  VERIFY: ["Verifying findings", "Checking each one against a fresh observation"],
+  REPORT: ["Writing the report", "Deduping, ranking, summarizing"],
+};
+const AGENT_COLOR = {
+  config_headers: "#74c0fc",
+  exposed_paths: "#ffa94d",
+  injection: "#ff6b6b",
+};
+const SEVS = ["critical", "high", "medium", "low", "info"];
+const PACE_MS = { finding: 420, verdict: 100, agent: 90, phase: 140, scan_started: 80 };
+
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const sevOf = (s) => { s = String(s || "info").toLowerCase(); return SEVS.includes(s) ? s : "info"; };
 
 const store = {
   get token(){ try { return localStorage.getItem("vs_token"); } catch { return null; } },
-  set token(v){ try { v?localStorage.setItem("vs_token",v):localStorage.removeItem("vs_token"); } catch {} },
-  get api(){ try { return localStorage.getItem("vs_api")||DEFAULT_API; } catch { return DEFAULT_API; } },
-  set api(v){ try { localStorage.setItem("vs_api",v); } catch {} },
+  set token(v){ try { v ? localStorage.setItem("vs_token", v) : localStorage.removeItem("vs_token"); } catch {} },
+  get api(){ try { return localStorage.getItem("vs_api") || DEFAULT_API; } catch { return DEFAULT_API; } },
+  set api(v){ try { localStorage.setItem("vs_api", v); } catch {} },
 };
 
+let scanGen = 0;
+let activeScan = null;
+let session = null;
+let clockTimer = null;
+
 async function api(path, opts={}) {
-  const res = await fetch(store.api+path, {
+  const res = await fetch(store.api + path, {
     ...opts,
     headers: { "Content-Type":"application/json",
-               ...(store.token?{Authorization:"Bearer "+store.token}:{}), ...(opts.headers||{}) },
+               ...(store.token ? {Authorization: "Bearer " + store.token} : {}), ...(opts.headers || {}) },
   });
   return res;
 }
@@ -114,11 +227,11 @@ async function login() {
   try {
     const res = await api("/auth/login", { method:"POST",
       body: JSON.stringify({ email:$("email").value, password:$("password").value }) });
-    if (!res.ok) { $("loginMsg").textContent = "Login failed ("+res.status+")"; return; }
+    if (!res.ok) { $("loginMsg").textContent = "Login failed (" + res.status + ")"; return; }
     const d = await res.json();
     store.token = d.token;
     enterApp(d.email);
-  } catch { $("loginMsg").textContent = "Cannot reach backend at "+store.api; }
+  } catch { $("loginMsg").textContent = "Cannot reach backend at " + store.api; }
 }
 
 function enterApp(email) {
@@ -133,69 +246,458 @@ async function loadTargets() {
   const res = await api("/targets");
   if (res.status === 401) return doLogout();
   const { targets } = await res.json();
-  $("cards").innerHTML = targets.map((t,i)=>`
+  $("cards").innerHTML = targets.map(t => `
     <div class="card">
-      <div class="pill">${esc(t.stack||"")}</div>
+      <div class="pill">${esc(t.stack || "")}</div>
       <h3>${esc(t.name)}</h3>
       <div class="url">${esc(t.url)}</div>
-      <button data-url="${esc(t.url)}" data-name="${esc(t.name)}">Scan</button>
+      <button type="button" data-url="${esc(t.url)}" data-name="${esc(t.name)}">Scan</button>
     </div>`).join("");
-  $("cards").querySelectorAll("button[data-url]").forEach(b=>
-    b.addEventListener("click",()=>scan(b.dataset.url, b.dataset.name)));
+  $("cards").querySelectorAll("button[data-url]").forEach(b =>
+    b.addEventListener("click", () => scan(b.dataset.url, b.dataset.name)));
   window._targets = targets;
 }
 
+function markActive(url) {
+  document.querySelectorAll("#cards .card").forEach(card => {
+    const btn = card.querySelector("button[data-url]");
+    const on = !!(btn && btn.dataset.url === url);
+    card.classList.toggle("active-scan", on);
+    if (btn) btn.textContent = on ? "Live" : "Scan";
+  });
+}
+function clearActive() {
+  document.querySelectorAll("#cards .card").forEach(card => {
+    card.classList.remove("active-scan");
+    const btn = card.querySelector("button[data-url]");
+    if (btn) btn.textContent = "Scan";
+  });
+}
+
+function theaterHTML(name, url) {
+  const phases = PHASES.map(p => `<li data-phase="${p}">${p}</li>`).join("");
+  return `
+    <div class="theater" aria-live="polite">
+      <div class="theater-top">
+        <div>
+          <div class="live-pill"><span id="liveDot" class="live-dot"></span><span id="liveWord">CONNECTING</span></div>
+          <h2 class="target-name">${esc(name || url)}</h2>
+          <div class="target-url">${esc(url)}</div>
+        </div>
+        <div id="clock" class="clock">00:00</div>
+        <button id="stopBtn" class="ghost" type="button">Stop</button>
+      </div>
+      <ol class="phase-rail">${phases}</ol>
+      <div id="hero" class="hero tone-phase">
+        <div id="heroKicker" class="hero-kicker">CONNECTING</div>
+        <div id="heroTitle" class="hero-title">Opening the stream</div>
+        <div id="heroSub" class="hero-sub">Waiting for the backend to accept this target.</div>
+      </div>
+      <div id="lanes" class="lanes"><div class="lane lane-wait">Waiting for specialists…</div></div>
+      <div class="feed-head"><h3>Findings as they land</h3><b id="foundCount">0</b><span class="muted">discovered</span></div>
+      <div id="feed" class="feed"><div id="feedEmpty" class="feed-empty">Each finding shows up here the moment an agent produces it.</div></div>
+      <div id="dedupe" class="dedupe"></div>
+      <div id="report" class="report"></div>
+    </div>`;
+}
+
+function startClock() {
+  stopClock();
+  const t0 = Date.now();
+  const tick = () => {
+    const el = $("clock");
+    if (!el) return;
+    const s = Math.floor((Date.now() - t0) / 1000);
+    el.textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+  };
+  tick();
+  clockTimer = setInterval(tick, 250);
+}
+function stopClock() {
+  if (clockTimer) clearInterval(clockTimer);
+  clockTimer = null;
+}
+
+function setHero(kicker, title, sub, tone) {
+  const hero = $("hero");
+  if (!hero) return;
+  hero.className = "hero" + (tone ? " tone-" + tone : "");
+  $("heroKicker").textContent = kicker || "";
+  $("heroTitle").textContent = title || "";
+  $("heroSub").textContent = sub || "";
+}
+
+function setLive(word, kind) {
+  const dot = $("liveDot");
+  const label = $("liveWord");
+  if (label) label.textContent = word;
+  if (!dot) return;
+  dot.classList.remove("done", "bad");
+  if (kind) dot.classList.add(kind);
+}
+
+function ensureLane(sess, name) {
+  if (!name) name = "agent";
+  if (sess.lanes[name]) return sess.lanes[name];
+  const host = $("lanes");
+  const wait = host && host.querySelector(".lane-wait");
+  if (wait) wait.remove();
+  const el = document.createElement("section");
+  el.className = "lane";
+  el.style.setProperty("--lane", AGENT_COLOR[name] || "#4f8cff");
+  el.innerHTML = `
+    <div class="lane-top"><span class="lane-name"></span><span class="lane-count">0</span></div>
+    <div class="lane-status">standing by</div>
+    <div class="lane-label"></div>
+    <div class="ticks"></div>`;
+  el.querySelector(".lane-name").textContent = name;
+  host.appendChild(el);
+  const lane = { running: 0, done: 0, findings: 0, expected: null, el, ticks: {} };
+  sess.lanes[name] = lane;
+  return lane;
+}
+
+function paintLane(lane) {
+  const status = lane.el.querySelector(".lane-status");
+  const count = lane.el.querySelector(".lane-count");
+  count.textContent = String(lane.findings);
+  if (lane.running > 0) {
+    lane.el.classList.add("running");
+    const of = lane.expected ? ` / ${lane.expected}` : "";
+    status.textContent = `${lane.running} running · ${lane.done}${of} done`;
+  } else {
+    lane.el.classList.remove("running");
+    if (lane.expected === 0) status.textContent = "not scheduled";
+    else if (lane.done > 0) status.textContent = `done · ${lane.findings} finding${lane.findings === 1 ? "" : "s"}`;
+    else status.textContent = "standing by";
+  }
+}
+
+function apply(sess, ev) {
+  if (!ev || sess.closed || sess.gen !== scanGen) return;
+  const type = ev.type;
+  if (type === "scan_started") {
+    setLive("LIVE");
+    setHero("LIVE", "Scan started", ev.run_id || "", "phase");
+    (ev.agents || []).forEach(name => ensureLane(sess, name));
+    return;
+  }
+  if (type === "phase") {
+    if (!PHASES.includes(ev.phase)) return;
+    const li = document.querySelector(`.phase-rail li[data-phase="${ev.phase}"]`);
+    if (ev.status === "started") {
+      document.querySelectorAll(".phase-rail li.active").forEach(n => n.classList.remove("active"));
+      if (li) { li.classList.add("active"); li.classList.remove("done"); }
+      const copy = PHASE_COPY[ev.phase] || [ev.phase, ""];
+      setHero(ev.phase, copy[0], copy[1], "phase");
+    } else if (ev.status === "finished") {
+      if (li) { li.classList.remove("active"); li.classList.add("done"); }
+      const detail = phaseDetail(ev.phase, ev.detail);
+      if (detail) $("heroSub").textContent = detail;
+      if (ev.phase === "PLAN" && ev.detail && ev.detail.by_agent) {
+        const planned = ev.detail.by_agent;
+        Object.keys(sess.lanes).forEach(name => {
+          sess.lanes[name].expected = Object.prototype.hasOwnProperty.call(planned, name) ? planned[name] : 0;
+          paintLane(sess.lanes[name]);
+        });
+        Object.keys(planned).forEach(name => ensureLane(sess, name));
+        Object.entries(planned).forEach(([name, n]) => {
+          sess.lanes[name].expected = n;
+          paintLane(sess.lanes[name]);
+        });
+      }
+    }
+    return;
+  }
+  if (type === "agent") {
+    const lane = ensureLane(sess, ev.agent);
+    const label = ev.label || (ev.section && (ev.section.param || ev.section.kind)) || "";
+    if (ev.status === "started") {
+      lane.running++;
+      const tick = document.createElement("i");
+      tick.className = "tick running";
+      tick.title = label;
+      lane.el.querySelector(".ticks").appendChild(tick);
+      if (ev.unit_id) lane.ticks[ev.unit_id] = tick;
+      if (label) lane.el.querySelector(".lane-label").textContent = label;
+    } else if (ev.status === "finished") {
+      lane.running = Math.max(0, lane.running - 1);
+      lane.done++;
+      const tick = ev.unit_id ? lane.ticks[ev.unit_id] : null;
+      if (tick) tick.classList.remove("running");
+      if (!Number(ev.findings)) {
+        if (tick) tick.classList.add("done");
+      }
+      lane.el.querySelector(".lane-label").textContent = label ? `${label} · done` : "done";
+    }
+    paintLane(lane);
+    return;
+  }
+  if (type === "finding") {
+    sess.rawCount++;
+    const count = $("foundCount");
+    if (count) count.textContent = String(sess.rawCount);
+    const sev = sevOf(ev.severity);
+    const lane = ensureLane(sess, ev.agent);
+    lane.findings++;
+    const tick = ev.unit_id ? lane.ticks[ev.unit_id] : null;
+    if (tick) tick.classList.add("hit", "sev-" + sev);
+    paintLane(lane);
+    const empty = $("feedEmpty");
+    if (empty) empty.remove();
+    const card = document.createElement("article");
+    card.className = "finding sev-" + sev;
+    if (ev.stream_id != null) card.dataset.streamId = String(ev.stream_id);
+    const who = [ev.agent, ev.section].filter(Boolean).join(" · ");
+    card.innerHTML = `
+      <div class="finding-top">
+        <span class="sev-tag sev-${sev}">${esc(sev.toUpperCase())}</span>
+        <span class="badge v-pending">pending</span>
+        <span class="finding-who">${esc(who)}</span>
+      </div>
+      <div class="finding-title">${esc(ev.title || "Finding")}</div>
+      <div class="finding-evi">${esc(ev.evidence || "")}</div>
+      ${ev.fix ? `<div class="finding-fix"><em>Fix:</em> ${esc(ev.fix)}</div>` : ""}`;
+    $("feed").prepend(card);
+    const sub = [who, ev.layer].filter(Boolean).join(" · ");
+    setHero(sev.toUpperCase(), ev.title || "Finding", sub, sev);
+    sess.heroStreamId = ev.stream_id;
+    return;
+  }
+  if (type === "verdict") {
+    const id = ev.stream_id;
+    if (id == null || !/^\d+$/.test(String(id))) return;
+    const card = document.querySelector(`.finding[data-stream-id="${id}"]`);
+    if (!card) return;
+    const badge = card.querySelector(".badge");
+    const verdict = String(ev.verdict || "unverified");
+    badge.className = "badge v-" + (["confirmed","unverified","rejected"].includes(verdict) ? verdict : "unverified");
+    badge.textContent = verdict;
+    if (sess.heroStreamId === id || String(sess.heroStreamId) === String(id)) {
+      $("heroSub").textContent = verdict + (ev.verify_note ? " — " + ev.verify_note : "");
+    }
+    return;
+  }
+  if (type === "scan_complete") {
+    sess.sawTerminal = true;
+    finishScan(sess, ev);
+    return;
+  }
+  if (type === "error") {
+    sess.sawTerminal = true;
+    setLive("STOPPED", "bad");
+    setHero("ERROR", ev.message || "Scan failed", "", "bad");
+  }
+}
+
+function phaseDetail(phase, detail) {
+  if (!detail) return "";
+  if (phase === "AUTH") return detail.note || (detail.authenticated ? "Authenticated" : "Anonymous");
+  if (phase === "MAP") return `${detail.pages || 0} pages · ${detail.forms || 0} forms · ${detail.params || 0} params`;
+  if (phase === "PLAN") return `${detail.units || 0} work units`;
+  if (phase === "SWARM") return `${detail.findings || 0} raw findings`;
+  if (phase === "VERIFY") {
+    return `${detail.confirmed || 0} confirmed · ${detail.unverified || 0} unverified · ${detail.rejected || 0} rejected`;
+  }
+  if (phase === "REPORT" && detail.total != null) return `${detail.total} in the report`;
+  return "";
+}
+
+function finishScan(sess, ev) {
+  const stop = $("stopBtn");
+  if (stop) stop.disabled = true;
+  if (ev.status === "cancelled") {
+    setLive("STOPPED", "bad");
+    setHero("STOPPED", "Scan stopped", "Later phases did not run.", "bad");
+    return;
+  }
+  setLive("DONE", "done");
+  document.querySelectorAll(".phase-rail li").forEach(li => {
+    li.classList.remove("active");
+    li.classList.add("done");
+  });
+  const summary = ev.summary || {};
+  const total = summary.total ?? 0;
+  setHero("COMPLETE", `${total} in the report`, `${summary.confirmed ?? 0} confirmed · ${summary.unverified ?? 0} unverified · ${summary.rejected ?? 0} rejected`, "ok");
+  const raw = sess.rawCount || 0;
+  if (raw !== total) {
+    const note = $("dedupe");
+    if (note) note.textContent = `Report kept ${total} after deduping ${raw} raw finding${raw === 1 ? "" : "s"}.`;
+  }
+  const name = document.querySelector(".target-name");
+  renderResult(name ? name.textContent : ev.target, ev, $("report"));
+}
+
+function enqueue(sess, ev) {
+  sess.pending.push(ev);
+  if (sess.pumping) return;
+  sess.pumping = true;
+  sess.drain = (async () => {
+    try {
+      while (sess.pending.length) {
+        if (sess.closed || sess.gen !== scanGen) { sess.pending = []; break; }
+        const next = sess.pending.shift();
+        try { apply(sess, next); } catch (err) { console.error(err); }
+        // A live scan delivers events seconds apart, so hold findings long enough
+        // to read on a projector. A coalesced burst still cascades, just faster,
+        // so the lanes fan out instead of appearing as one finished batch.
+        const backlog = sess.pending.length;
+        let wait = PACE_MS[next.type] || 0;
+        if (backlog >= 8) wait = Math.min(wait, 80);
+        else if (backlog >= 3) wait = Math.min(wait, 150);
+        if (wait && !sess.closed) await new Promise(r => setTimeout(r, wait));
+        else await new Promise(r => requestAnimationFrame(r));
+      }
+    } finally {
+      sess.pumping = false;
+    }
+  })();
+}
+
+function parseSSE(raw) {
+  const data = [];
+  for (const line of raw.split("\n")) {
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  }
+  if (!data.length) return null;
+  try { return JSON.parse(data.join("\n")); } catch { return null; }
+}
+
+async function readSSE(body, onEvent) {
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    buf = buf.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) >= 0) {
+      const raw = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const ev = parseSSE(raw);
+      if (ev) onEvent(ev);
+    }
+  }
+}
+
+function requestStop() {
+  if (session) session.closed = true;
+  if (activeScan) activeScan.abort();
+}
+
 async function scan(url, name) {
-  $("result").innerHTML = `<div class="spin">Scanning ${esc(name)} … (crawl → swarm → verify)</div>`;
+  if (activeScan) activeScan.abort();
+  const gen = ++scanGen;
+  const ctrl = new AbortController();
+  activeScan = ctrl;
+  stopClock();
+  const sess = {
+    gen, pending: [], pumping: false, drain: null, closed: false,
+    rawCount: 0, heroStreamId: null, lanes: {}, sawTerminal: false,
+  };
+  session = sess;
+  markActive(url);
+  $("result").innerHTML = theaterHTML(name, url);
+  const stopBtn = $("stopBtn");
+  if (stopBtn) stopBtn.addEventListener("click", requestStop);
+  startClock();
   try {
-    const res = await api("/scan", { method:"POST", body: JSON.stringify({ url }) });
-    const d = await res.json();
-    if (!res.ok) { $("result").innerHTML = `<div class="err">${esc(d.detail||"scan error")}</div>`; return; }
-    renderResult(name, d);
-  } catch { $("result").innerHTML = `<div class="err">Backend unreachable.</div>`; }
+    const res = await fetch(store.api + "/scan/stream", {
+      method: "POST",
+      headers: { "Content-Type":"application/json", Authorization: "Bearer " + store.token },
+      body: JSON.stringify({ url }),
+      signal: ctrl.signal,
+    });
+    if (sess.closed || gen !== scanGen) return;
+    if (res.status === 401) { doLogout(); return; }
+    if (!res.ok) {
+      let msg = "Scan refused (" + res.status + ")";
+      try {
+        const d = await res.json();
+        if (typeof d.detail === "string") msg = d.detail;
+      } catch {}
+      setLive("STOPPED", "bad");
+      setHero("BLOCKED", msg, "The allowlist check runs before a scan starts.", "bad");
+      return;
+    }
+    await readSSE(res.body, (ev) => enqueue(sess, ev));
+    if (sess.drain) await sess.drain;
+    if (!sess.closed && gen === scanGen && !sess.sawTerminal) {
+      setLive("STOPPED", "bad");
+      setHero("ERROR", "Stream ended early", "The backend closed before the scan finished.", "bad");
+    }
+  } catch (e) {
+    if (gen !== scanGen) return;
+    if (e.name === "AbortError" || sess.closed) {
+      setLive("STOPPED", "bad");
+      setHero("STOPPED", "Scan stopped", "The stream closed. Later phases will not start.", "bad");
+      return;
+    }
+    setLive("STOPPED", "bad");
+    setHero("OFFLINE", "Backend unreachable.", store.api, "bad");
+  } finally {
+    if (gen === scanGen) {
+      stopClock();
+      activeScan = null;
+      clearActive();
+      const btn = $("stopBtn");
+      if (btn) btn.disabled = true;
+    }
+  }
 }
 
 async function scanAll() {
-  for (const t of (window._targets||[])) await scan(t.url, t.name);
+  for (const t of (window._targets || [])) await scan(t.url, t.name);
 }
 
-function renderResult(name, d) {
-  const s = d.summary||{}, m = d.machines||{}, fp = d.fingerprint||{};
-  const rows = (d.findings||[]).map(f=>`
-    <tr class="${f.verdict==='rejected'?'rejected':''}">
+function renderResult(name, d, target) {
+  const s = d.summary || {}, m = d.machines || {}, fp = d.fingerprint || {};
+  const rows = (d.findings || []).map(f => `
+    <tr class="${f.verdict === "rejected" ? "rejected" : ""}">
       <td><span class="badge v-${esc(f.verdict)}">${esc(f.verdict)}</span></td>
-      <td class="sev sev-${esc(f.severity)}">${esc(f.severity)}</td>
-      <td>${esc(f.layer)} <span class="src">${f.source==='ai'?'AI':'check'}</span></td>
+      <td class="sev sev-${esc(sevOf(f.severity))}">${esc(f.severity)}</td>
+      <td>${esc(f.layer)} <span class="src">${f.source === "ai" ? "AI" : "check"}</span></td>
       <td><strong>${esc(f.title)}</strong><div class="evi">${esc(f.evidence)}</div>
-          <div class="muted" style="font-size:12px"><em>Fix:</em> ${esc(f.fix)}</div></td>
+          <div class="muted" style="font-size:14px"><em>Fix:</em> ${esc(f.fix)}</div></td>
     </tr>`).join("");
-  $("result").innerHTML = `
-    <h2 style="font-size:15px">Results — ${esc(name)} <span class="muted">(${esc(d.target)})</span></h2>
+  const html = `
+    <h2>Report — ${esc(name)} <span class="muted">(${esc(d.target)})</span></h2>
     <div class="summary">
-      <div class="stat"><b>${s.total??0}</b> findings</div>
-      <div class="stat" style="color:var(--ok)"><b>${s.confirmed??0}</b> confirmed</div>
-      <div class="stat" style="color:var(--warn)"><b>${s.unverified??0}</b> unverified</div>
-      <div class="stat" style="color:var(--rej)"><b>${s.rejected??0}</b> rejected</div>
+      <div class="stat"><b>${s.total ?? 0}</b> findings</div>
+      <div class="stat" style="color:var(--ok)"><b>${s.confirmed ?? 0}</b> confirmed</div>
+      <div class="stat" style="color:var(--warn)"><b>${s.unverified ?? 0}</b> unverified</div>
+      <div class="stat" style="color:var(--rej)"><b>${s.rejected ?? 0}</b> rejected</div>
       <div class="stat muted">stack: ${esc(fp.stack)}/${esc(fp.lang)}</div>
-      <div class="stat muted">surface: ${d.surface?.pages}p · ${d.surface?.forms}f · ${d.surface?.params}q → ${d.units} units</div>
-      <div class="stat muted">auth: ${d.auth?.authenticated?'yes':'no'}</div>
+      <div class="stat muted">surface: ${d.surface?.pages ?? 0}p · ${d.surface?.forms ?? 0}f · ${d.surface?.params ?? 0}q → ${d.units ?? 0} units</div>
+      <div class="stat muted">auth: ${d.auth?.authenticated ? "yes" : "no"}</div>
       <div class="stat muted">model: ${esc(d.model)}</div>
     </div>
     <table>
       <thead><tr><th>verdict</th><th>sev</th><th>layer</th><th>finding</th></tr></thead>
-      <tbody>${rows||'<tr><td colspan=4 class="muted">No findings.</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="4" class="muted">No findings.</td></tr>'}</tbody>
     </table>
     <div class="machines">from <strong>${esc(m.requested_from?.name)}</strong> (${esc(m.requested_from?.ip)})
       → scanner <strong>${esc(m.scanner?.name)}</strong>
       → target <strong>${esc(m.target?.name)}</strong> [${esc(m.target?.server_banner)}]</div>`;
+  (target || $("result")).innerHTML = html;
 }
 
-function doLogout(){ store.token=null; $("appView").classList.add("hidden");
-  $("logout").classList.add("hidden"); $("loginView").classList.remove("hidden"); $("who").textContent=""; }
+function doLogout(){
+  store.token = null;
+  if (activeScan) activeScan.abort();
+  $("appView").classList.add("hidden");
+  $("logout").classList.add("hidden");
+  $("loginView").classList.remove("hidden");
+  $("who").textContent = "";
+}
 
 $("loginBtn").addEventListener("click", login);
 $("logout").addEventListener("click", doLogout);
 $("scanAll").addEventListener("click", scanAll);
+$("password").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 $("api").value = store.api;
 if (store.token) enterApp("");
 </script>

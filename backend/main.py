@@ -1,28 +1,33 @@
 """
-VulnSwarm backend — pipeline-proof slice.
+VulnSwarm backend.
 
-Purpose of THIS file (not the final product): prove the pipeline works end to end:
     extension  --login-->  token  --/scan-->  backend  --finding-->  extension
+    dashboard  --login-->  token  --/scan/stream-->  backend  --SSE-->  dashboard
 
-The real swarm (orchestrator + specialist agents + verifier + reporter) plugs in
-later behind the /scan endpoint. For now /scan returns a single stub finding so we
-can confirm auth + transport + UI all round-trip before committing to the design.
+POST /scan runs the swarm and returns the finished report. POST /scan/stream runs
+the same swarm and pushes phase, agent, and finding events as they happen.
+Both refuse any target that is not on ALLOWLIST before the orchestrator starts.
 
-SCOPE SAFETY: /scan refuses any target not on ALLOWLIST. This stays in the final
-product — the tool must physically refuse to touch anything we don't own.
+SCOPE SAFETY: a host not on ALLOWLIST is rejected with HTTP 403. The streaming
+path uses the same check and re-checks inside the worker so a stream cannot
+reach the orchestrator by skipping the handler.
 """
 import hashlib
 import hmac
 import json
 import os
 import time
+from urllib.parse import urlparse
 
 import socket
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+
+import streaming
 
 # --- config -----------------------------------------------------------------
 # Demo secret. In real use this comes from env / a secrets store, never hardcoded.
@@ -122,6 +127,25 @@ def targets(user: str = Depends(verify_token)):
     return {"targets": LAB_TARGETS}
 
 
+class ScopeError(Exception):
+    """Raised when a target host is not on ALLOWLIST. Never starts a scan."""
+
+    def __init__(self, host: str, url: str):
+        self.host = host
+        self.url = url
+        super().__init__(
+            f"target '{host or url}' is not on the allowlist — refusing to scan"
+        )
+
+
+def allowlisted_host(url: str) -> str:
+    """Return the target hostname, or raise ScopeError. Does not touch the network."""
+    host = urlparse(url).hostname or ""
+    if host not in ALLOWLIST:
+        raise ScopeError(host, url)
+    return host
+
+
 def _rev_dns(ip_or_host: str) -> str:
     """Best-effort machine name for an IP or host. Returns '' if it can't resolve."""
     if not ip_or_host:
@@ -134,32 +158,9 @@ def _rev_dns(ip_or_host: str) -> str:
         return ""
 
 
-@app.post("/scan")
-def scan(body: ScanIn, request: Request, user: str = Depends(verify_token)):
-    """
-    Pipeline proof: validate scope, then return ONE stub finding.
-    Later this hands the target to the orchestrator and streams real findings.
-    """
-    from urllib.parse import urlparse
-
-    import orchestrator
-
-    host = urlparse(body.url).hostname or ""
-    if host not in ALLOWLIST:
-        raise HTTPException(
-            403,
-            f"target '{host or body.url}' is not on the allowlist — refusing to scan",
-        )
-
-    # run the swarm: recon -> agents -> verify -> report
-    try:
-        result = orchestrator.run_scan(body.url)
-    except Exception as e:
-        raise HTTPException(502, f"scan failed: {type(e).__name__}: {e}")
-
-    # machine identities (provenance): who asked, who scanned, what was scanned
-    client_ip = request.client.host if request.client else ""
-    machines = {
+def machine_provenance(client_ip: str, host: str, server_banner: str) -> dict:
+    """Who asked, who scanned, what was scanned."""
+    return {
         "requested_from": {
             "ip": client_ip,
             "name": _rev_dns(client_ip) or "unknown",
@@ -169,18 +170,93 @@ def scan(body: ScanIn, request: Request, user: str = Depends(verify_token)):
         },
         "target": {
             "url_host": host,
-            "server_banner": result["recon"]["server"] or "unknown",
+            "server_banner": server_banner or "unknown",
             "name": _rev_dns(host) or "unknown",
         },
     }
 
+
+@app.post("/scan")
+def scan(body: ScanIn, request: Request, user: str = Depends(verify_token)):
+    """Validate scope, run the swarm, return the finished report."""
+    import orchestrator
+
+    try:
+        host = allowlisted_host(body.url)
+    except ScopeError as e:
+        raise HTTPException(403, str(e))
+
+    # run the swarm: auth -> map -> plan -> swarm -> verify -> report
+    try:
+        result = orchestrator.run_scan(body.url)
+    except Exception as e:
+        raise HTTPException(502, f"scan failed: {type(e).__name__}: {e}")
+
+    client_ip = request.client.host if request.client else ""
     return {
         "target": body.url,
         "requested_by": user,
         "status": "complete",
-        "machines": machines,
-        **result,  # recon, agents_run, model, ai_available, findings, summary
+        "machines": machine_provenance(client_ip, host, result["recon"]["server"]),
+        **result,  # recon, specialists_run, model, ai_available, findings, summary
     }
+
+
+@app.post("/scan/stream")
+def scan_stream(body: ScanIn, request: Request, user: str = Depends(verify_token)):
+    """Same swarm as /scan, pushed as Server-Sent Events while it runs.
+
+    Refuses with HTTP 403 before the response starts when the host is not on
+    ALLOWLIST. The worker checks again before calling the orchestrator.
+
+    Events (JSON, one per message, `type` field):
+      scan_started, phase, agent, finding, verdict, scan_complete, error
+
+    A disconnected client sets a per-request stop flag checked between phases.
+    There is no global kill switch, no rate limit, and no audit log on this path.
+    """
+    import orchestrator
+
+    try:
+        host = allowlisted_host(body.url)
+    except ScopeError as e:
+        raise HTTPException(403, str(e))
+
+    client_ip = request.client.host if request.client else ""
+    target_url = body.url
+
+    def produce(on_event, stop):
+        # Backstop: never call the orchestrator for a host the allowlist rejects,
+        # even if a future caller starts the thread without the handler check.
+        try:
+            allowlisted_host(target_url)
+        except ScopeError as e:
+            on_event({"type": "error", "message": str(e)})
+            return
+
+        def wrapped(ev: dict):
+            if ev.get("type") in ("scan_started", "scan_complete"):
+                ev["requested_by"] = user
+            if ev.get("type") == "scan_complete":
+                recon = ev.get("recon") if isinstance(ev.get("recon"), dict) else {}
+                ev["machines"] = machine_provenance(
+                    client_ip, host, recon.get("server") or ""
+                )
+            on_event(ev)
+
+        orchestrator.run_scan(
+            target_url, on_event=wrapped, should_stop=stop.is_set
+        )
+
+    events, stop = streaming.start_scan_thread(produce)
+    return StreamingResponse(
+        streaming.sse_frames(events, stop),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/health")
