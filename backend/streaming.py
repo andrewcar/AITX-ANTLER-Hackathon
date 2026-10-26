@@ -71,8 +71,14 @@ async def sse_frames(events: queue.Queue, stop: threading.Event):
                 if stop.is_set():
                     break
                 yield ": ping\n\n"
+                # Give the socket a turn so a heartbeat is not stuck behind the next event.
+                await asyncio.sleep(0)
                 continue
             yield format_sse(item)
+            # transport.write() only queues bytes. Yielding the event loop here
+            # flushes that chunk before we pull the next event, so a phase start
+            # is visible while the phase is still working.
+            await asyncio.sleep(0)
     finally:
         # Client disconnect, or the generator was closed. The scan thread
         # notices between phases. This is per-request cancel, not a global

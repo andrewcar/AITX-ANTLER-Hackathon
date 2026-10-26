@@ -281,6 +281,55 @@ def test_blocking_scan_response_shape(monkeypatch):
     assert data["summary"]["total"] == 0
 
 
+def test_phase_start_arrives_while_that_phase_is_still_running(monkeypatch):
+    """A phase start must hit the client before the phase's own work finishes."""
+    monkeypatch.setattr(main, "_rev_dns", lambda _host: "")
+
+    def slow(url, on_event=None, should_stop=None):
+        on_event({"type": "phase", "phase": "MAP", "status": "started"})
+        time.sleep(0.45)
+        on_event({"type": "phase", "phase": "MAP", "status": "finished", "detail": {"pages": 1}})
+        on_event({
+            "type": "scan_complete",
+            "status": "complete",
+            "run_id": "run_flush",
+            "target": url,
+            "recon": {"server": ""},
+            "summary": {"total": 0, "confirmed": 0, "unverified": 0, "rejected": 0},
+            "findings": [],
+        })
+        return {"run_id": "run_flush"}
+
+    monkeypatch.setattr(orchestrator, "run_scan", slow)
+    client = TestClient(main.app)
+    token = _login(client)
+    start = time.perf_counter()
+    started_at = finished_at = None
+    buf = ""
+    with client.stream(
+        "POST", "/scan/stream",
+        json={"url": "http://localhost/lab"},
+        headers=_auth(token),
+    ) as res:
+        assert res.status_code == 200
+        for chunk in res.iter_text():
+            buf += chunk
+            while "\n\n" in buf:
+                raw, buf = buf.split("\n\n", 1)
+                data = [ln[5:].strip() for ln in raw.split("\n") if ln.startswith("data:")]
+                if not data:
+                    continue
+                event = json.loads("\n".join(data))
+                now = time.perf_counter() - start
+                if event.get("type") == "phase" and event.get("phase") == "MAP":
+                    if event.get("status") == "started":
+                        started_at = now
+                    elif event.get("status") == "finished":
+                        finished_at = now
+    assert started_at is not None and started_at < 0.25, started_at
+    assert finished_at is not None and finished_at - started_at > 0.3, (started_at, finished_at)
+
+
 def test_stream_flushes_scan_started_before_the_scan_finishes(monkeypatch):
     monkeypatch.setattr(main, "_rev_dns", lambda _host: "")
 
