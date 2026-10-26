@@ -49,11 +49,12 @@ def run(section: dict, ctx) -> list[dict]:
     if not base:
         return []
 
-    baseline = recon.probe(base + _rand_path())
+    sess = getattr(ctx, "session", None)
+    baseline = recon.probe(base + _rand_path(), sess)
 
     findings = []
     for path, sev, sig, expect_file in SENSITIVE:
-        r = recon.probe(base + path)
+        r = recon.probe(base + path, sess)
         if r["status"] != 200:
             continue
         if _same_as(r, baseline):

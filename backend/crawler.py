@@ -43,7 +43,7 @@ class _HTMLScan(html.parser.HTMLParser):
             self._form = None
 
 
-def map_site(url: str) -> dict:
+def map_site(url: str, session=None) -> dict:
     target_host = urlparse(url).hostname
     seen: set[str] = set()
     queue: list[tuple[str, int]] = [(url, 0)]
@@ -55,7 +55,7 @@ def map_site(url: str) -> dict:
             continue
         seen.add(cur)
 
-        page = recon.get(cur)
+        page = recon.get(cur, session)
         if page["status"] == 0:
             continue
         pages.append({"url": cur, "status": page["status"]})

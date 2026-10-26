@@ -15,6 +15,7 @@ processes across machines; the phase logic is unchanged.
 """
 from concurrent.futures import ThreadPoolExecutor
 
+import auth
 import crawler
 import fingerprint
 import llm
@@ -35,10 +36,14 @@ MAX_WORKERS = 8  # parallel specialists in the SWARM phase
 
 
 def run_scan(url: str) -> dict:
-    # MAP
-    root = recon.scan(url)
-    ctx = ScanContext(url=url, recon_root=root)
-    ctx.surface = crawler.map_site(url)
+    # AUTH — one shared session; log in if we recognize the target
+    session = recon.Session()
+    auth_result = auth.maybe_login(url, session)
+
+    # MAP — recon + crawl AS the logged-in session
+    root = recon.scan(url, session)
+    ctx = ScanContext(url=url, recon_root=root, session=session, auth=auth_result)
+    ctx.surface = crawler.map_site(url, session)
 
     # (fingerprint informs planning / reporting)
     ctx.fingerprint = fingerprint.detect(root, ctx.surface)
@@ -61,7 +66,7 @@ def run_scan(url: str) -> dict:
         list(pool.map(_run_unit, units))
 
     # VERIFY
-    verified = verifier.verify_all(ctx.findings, url)
+    verified = verifier.verify_all(ctx.findings, url, session)
 
     # REPORT
     rep = reporter.report(verified)
@@ -69,6 +74,7 @@ def run_scan(url: str) -> dict:
     specialists_run = sorted({u["specialist"] for u in units})
     return {
         "run_id": ctx.run_id,
+        "auth": ctx.auth,
         "fingerprint": ctx.fingerprint,
         "surface": {
             "pages": len(ctx.surface.get("pages", [])),

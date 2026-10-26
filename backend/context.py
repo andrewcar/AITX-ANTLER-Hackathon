@@ -17,6 +17,8 @@ class ScanContext:
     recon_root: dict                           # recon.scan(url)
     surface: dict = field(default_factory=dict)
     fingerprint: dict = field(default_factory=dict)
+    session: object = None          # recon.Session: shared logged-in cookies
+    auth: dict = field(default_factory=dict)
     findings: list = field(default_factory=list)
     run_id: str = field(default_factory=lambda: "run_" + uuid.uuid4().hex[:10])
     started: float = field(default_factory=time.time)

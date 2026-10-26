@@ -47,10 +47,12 @@ def run(section: dict, ctx) -> list[dict]:
     method = section.get("method", "get")
     findings = []
 
+    sess = getattr(ctx, "session", None)
+
     # --- reflected XSS ---
     mark = _mark()
     payload = f'"><{mark}>'
-    r = recon.send(url, method, _data(section, param, payload))
+    r = recon.send(url, method, _data(section, param, payload), sess)
     if f"<{mark}>" in r.get("body", ""):
         findings.append({
             "layer": "injection", "severity": "high",
@@ -63,7 +65,7 @@ def run(section: dict, ctx) -> list[dict]:
         })
 
     # --- error-based SQLi ---
-    r2 = recon.send(url, method, _data(section, param, "'"))
+    r2 = recon.send(url, method, _data(section, param, "'"), sess)
     sig = sql_error_in(r2.get("body", ""))
     if sig:
         findings.append({
