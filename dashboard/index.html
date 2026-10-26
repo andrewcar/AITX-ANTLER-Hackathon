@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VulnSwarm Dashboard</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#14171d; --line:#2a2e36; --fg:#e6e6e6; --muted:#9aa0a6;
+    --accent:#4f8cff; --ok:#5ee08a; --warn:#e8c35a; --rej:#9aa0a6;
+    --hi:#ff6b6b; --med:#ffa94d; --low:#ffd43b; --info:#74c0fc;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 system-ui,-apple-system,sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:16px; margin:0; font-weight:700; }
+  header .sub { color:var(--muted); font-size:12px; }
+  header .right { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  main { max-width:1100px; margin:0 auto; padding:20px 16px; }
+  input, button { font:inherit; }
+  input { background:var(--panel); border:1px solid var(--line); color:var(--fg);
+          border-radius:6px; padding:8px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px;
+           padding:8px 12px; font-weight:600; cursor:pointer; }
+  button.ghost { background:var(--panel); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .muted { color:var(--muted); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card h3 { margin:0 0 2px; font-size:15px; }
+  .card .url { color:var(--muted); font-size:12px; word-break:break-all; margin-bottom:10px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:20px; font-size:11px;
+          background:#1c2330; color:var(--muted); margin-bottom:8px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .summary { display:flex; flex-wrap:wrap; gap:14px; background:var(--panel);
+             border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:14px 0; }
+  .stat b { font-size:18px; }
+  table { width:100%; border-collapse:collapse; margin-top:6px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  td.evi { color:var(--muted); font-size:12px; font-family:ui-monospace,monospace; word-break:break-word; }
+  tr.rejected { opacity:.5; }
+  .badge { display:inline-block; padding:1px 7px; border-radius:4px; font-size:11px; font-weight:700; }
+  .v-confirmed { background:#16351f; color:var(--ok); }
+  .v-unverified { background:#3a3320; color:var(--warn); }
+  .v-rejected { background:#23262d; color:var(--rej); text-decoration:line-through; }
+  .sev { font-weight:700; }
+  .sev-high { color:var(--hi); } .sev-medium { color:var(--med); }
+  .sev-low { color:var(--low); } .sev-info { color:var(--info); }
+  .src { font-size:10px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:0 4px; }
+  .machines { color:var(--muted); font-size:12px; margin-top:10px; }
+  .hidden { display:none; }
+  .spin { color:var(--accent); }
+  .err { color:var(--hi); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>VulnSwarm</h1><span class="sub">swarm dashboard</span>
+  <div class="right">
+    <input id="api" style="width:200px" />
+    <span id="who" class="muted"></span>
+    <button id="logout" class="ghost hidden">logout</button>
+  </div>
+</header>
+<main>
+  <!-- login -->
+  <section id="loginView" class="card" style="max-width:360px;margin-top:10px">
+    <h3>Sign in</h3>
+    <div class="muted" style="margin-bottom:8px">Connect to the swarm backend.</div>
+    <div class="row" style="margin-bottom:8px"><input id="email" value="erwin@local" placeholder="email" style="flex:1"/></div>
+    <div class="row" style="margin-bottom:10px"><input id="password" type="password" value="demo" placeholder="password" style="flex:1"/></div>
+    <button id="loginBtn">Sign in</button>
+    <div id="loginMsg" class="err"></div>
+  </section>
+
+  <!-- app -->
+  <section id="appView" class="hidden">
+    <div class="row" style="justify-content:space-between;margin-bottom:10px">
+      <h2 style="font-size:15px;margin:0">Targets</h2>
+      <button id="scanAll" class="ghost">Scan all</button>
+    </div>
+    <div id="cards" class="cards"></div>
+    <div id="result"></div>
+  </section>
+</main>
+<script>
+const DEFAULT_API = "http://10.0.0.32:8000";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const store = {
+  get token(){ try { return localStorage.getItem("vs_token"); } catch { return null; } },
+  set token(v){ try { v?localStorage.setItem("vs_token",v):localStorage.removeItem("vs_token"); } catch {} },
+  get api(){ try { return localStorage.getItem("vs_api")||DEFAULT_API; } catch { return DEFAULT_API; } },
+  set api(v){ try { localStorage.setItem("vs_api",v); } catch {} },
+};
+
+async function api(path, opts={}) {
+  const res = await fetch(store.api+path, {
+    ...opts,
+    headers: { "Content-Type":"application/json",
+               ...(store.token?{Authorization:"Bearer "+store.token}:{}), ...(opts.headers||{}) },
+  });
+  return res;
+}
+
+async function login() {
+  $("loginMsg").textContent = "";
+  store.api = $("api").value.trim() || DEFAULT_API;
+  try {
+    const res = await api("/auth/login", { method:"POST",
+      body: JSON.stringify({ email:$("email").value, password:$("password").value }) });
+    if (!res.ok) { $("loginMsg").textContent = "Login failed ("+res.status+")"; return; }
+    const d = await res.json();
+    store.token = d.token;
+    enterApp(d.email);
+  } catch { $("loginMsg").textContent = "Cannot reach backend at "+store.api; }
+}
+
+function enterApp(email) {
+  $("loginView").classList.add("hidden");
+  $("appView").classList.remove("hidden");
+  $("logout").classList.remove("hidden");
+  $("who").textContent = email || "";
+  loadTargets();
+}
+
+async function loadTargets() {
+  const res = await api("/targets");
+  if (res.status === 401) return doLogout();
+  const { targets } = await res.json();
+  $("cards").innerHTML = targets.map((t,i)=>`
+    <div class="card">
+      <div class="pill">${esc(t.stack||"")}</div>
+      <h3>${esc(t.name)}</h3>
+      <div class="url">${esc(t.url)}</div>
+      <button data-url="${esc(t.url)}" data-name="${esc(t.name)}">Scan</button>
+    </div>`).join("");
+  $("cards").querySelectorAll("button[data-url]").forEach(b=>
+    b.addEventListener("click",()=>scan(b.dataset.url, b.dataset.name)));
+  window._targets = targets;
+}
+
+async function scan(url, name) {
+  $("result").innerHTML = `<div class="spin">Scanning ${esc(name)} … (crawl → swarm → verify)</div>`;
+  try {
+    const res = await api("/scan", { method:"POST", body: JSON.stringify({ url }) });
+    const d = await res.json();
+    if (!res.ok) { $("result").innerHTML = `<div class="err">${esc(d.detail||"scan error")}</div>`; return; }
+    renderResult(name, d);
+  } catch { $("result").innerHTML = `<div class="err">Backend unreachable.</div>`; }
+}
+
+async function scanAll() {
+  for (const t of (window._targets||[])) await scan(t.url, t.name);
+}
+
+function renderResult(name, d) {
+  const s = d.summary||{}, m = d.machines||{}, fp = d.fingerprint||{};
+  const rows = (d.findings||[]).map(f=>`
+    <tr class="${f.verdict==='rejected'?'rejected':''}">
+      <td><span class="badge v-${esc(f.verdict)}">${esc(f.verdict)}</span></td>
+      <td class="sev sev-${esc(f.severity)}">${esc(f.severity)}</td>
+      <td>${esc(f.layer)} <span class="src">${f.source==='ai'?'AI':'check'}</span></td>
+      <td><strong>${esc(f.title)}</strong><div class="evi">${esc(f.evidence)}</div>
+          <div class="muted" style="font-size:12px"><em>Fix:</em> ${esc(f.fix)}</div></td>
+    </tr>`).join("");
+  $("result").innerHTML = `
+    <h2 style="font-size:15px">Results — ${esc(name)} <span class="muted">(${esc(d.target)})</span></h2>
+    <div class="summary">
+      <div class="stat"><b>${s.total??0}</b> findings</div>
+      <div class="stat" style="color:var(--ok)"><b>${s.confirmed??0}</b> confirmed</div>
+      <div class="stat" style="color:var(--warn)"><b>${s.unverified??0}</b> unverified</div>
+      <div class="stat" style="color:var(--rej)"><b>${s.rejected??0}</b> rejected</div>
+      <div class="stat muted">stack: ${esc(fp.stack)}/${esc(fp.lang)}</div>
+      <div class="stat muted">surface: ${d.surface?.pages}p · ${d.surface?.forms}f · ${d.surface?.params}q → ${d.units} units</div>
+      <div class="stat muted">auth: ${d.auth?.authenticated?'yes':'no'}</div>
+      <div class="stat muted">model: ${esc(d.model)}</div>
+    </div>
+    <table>
+      <thead><tr><th>verdict</th><th>sev</th><th>layer</th><th>finding</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan=4 class="muted">No findings.</td></tr>'}</tbody>
+    </table>
+    <div class="machines">from <strong>${esc(m.requested_from?.name)}</strong> (${esc(m.requested_from?.ip)})
+      → scanner <strong>${esc(m.scanner?.name)}</strong>
+      → target <strong>${esc(m.target?.name)}</strong> [${esc(m.target?.server_banner)}]</div>`;
+}
+
+function doLogout(){ store.token=null; $("appView").classList.add("hidden");
+  $("logout").classList.add("hidden"); $("loginView").classList.remove("hidden"); $("who").textContent=""; }
+
+$("loginBtn").addEventListener("click", login);
+$("logout").addEventListener("click", doLogout);
+$("scanAll").addEventListener("click", scanAll);
+$("api").value = store.api;
+if (store.token) enterApp("");
+</script>
+</body>
+</html>

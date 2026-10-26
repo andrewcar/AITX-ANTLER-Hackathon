@@ -45,6 +45,12 @@ ALLOWLIST = {
     # add Andrew's server IP here when we bring it in
 }
 
+# The hosted lab targets shown on the dashboard (the multi-site "main page").
+LAB_TARGETS = [
+    {"name": "DVWA", "stack": "PHP / LAMP", "url": "http://10.0.0.32:8081"},
+    {"name": "Juice Shop", "stack": "Node / SPA", "url": "http://10.0.0.32:3001"},
+]
+
 app = FastAPI(title="VulnSwarm backend (pipeline proof)")
 
 # The extension and dashboard call us from a different origin, so allow CORS.
@@ -112,8 +118,8 @@ def me(user: str = Depends(verify_token)):
 
 @app.get("/targets")
 def targets(user: str = Depends(verify_token)):
-    """The hosted sites the dashboard lists. For now, the allowlist itself."""
-    return {"targets": sorted(ALLOWLIST)}
+    """The hosted sites the dashboard lists."""
+    return {"targets": LAB_TARGETS}
 
 
 def _rev_dns(ip_or_host: str) -> str:

@@ -23,6 +23,14 @@ services:
       - ./backend/.env       # holds FEATHERLESS_API_KEY and VULNSWARM_MODEL (gitignored)
     restart: unless-stopped
 
+  dashboard:
+    image: nginx:alpine
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro   # the multi-site "main page"
+    ports:
+      - "8090:80"
+    restart: unless-stopped
+
   juice:
     image: bkimminich/juice-shop:v18.0.0
     ports:

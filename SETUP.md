@@ -27,6 +27,16 @@ The script checks the backend and opens your browser's extensions page.
 3. Sign in — **`andrew@local` / `demo`** (or `erwin@local` / `demo`)
 4. **Scan this tab** → a finding comes back
 
+## Dashboard (no install — just a URL)
+
+The team dashboard (multi-site view, scan buttons, live findings) is served by the
+tower. Just open it in any browser on the LAN:
+
+    http://10.0.0.32:8090
+
+Sign in (`erwin@local` / `demo`), pick a target, hit **Scan**. The extension and the
+dashboard are two front doors to the same backend — use whichever you prefer.
+
 ## Updating later
 
 ```bash
