@@ -65,16 +65,15 @@ def analyze(recon: dict) -> list[dict]:
     data = json.loads(text)
     findings = data.get("findings", []) if isinstance(data, dict) else []
 
-    # normalize into the shape the extension renders
+    # emit RAW findings; the reporter assigns ids and the verifier assigns verdicts
     out = []
-    for i, f in enumerate(findings, 1):
+    for f in findings:
         out.append({
-            "id": f"AI-{i:03d}",
             "layer": f.get("layer", "info"),
             "severity": f.get("severity", "info"),
             "title": f.get("title", "(no title)"),
             "evidence": f.get("evidence", ""),
-            "verified": False,  # AI triage is unverified until a verifier agent confirms it
             "fix": f.get("fix", ""),
+            "source": "ai",
         })
     return out

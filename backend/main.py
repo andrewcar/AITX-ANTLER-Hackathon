@@ -136,8 +136,7 @@ def scan(body: ScanIn, request: Request, user: str = Depends(verify_token)):
     """
     from urllib.parse import urlparse
 
-    import llm
-    import recon
+    import orchestrator
 
     host = urlparse(body.url).hostname or ""
     if host not in ALLOWLIST:
@@ -146,51 +145,25 @@ def scan(body: ScanIn, request: Request, user: str = Depends(verify_token)):
             f"target '{host or body.url}' is not on the allowlist — refusing to scan",
         )
 
-    # 1. REAL recon — collect factual evidence from the target
+    # run the swarm: recon -> agents -> verify -> report
     try:
-        data = recon.scan(body.url)
+        result = orchestrator.run_scan(body.url)
     except Exception as e:
-        raise HTTPException(502, f"could not reach target: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"scan failed: {type(e).__name__}: {e}")
 
-    # 2. AI triage — the LLM explains the evidence into findings
-    findings, ai_status = [], "ok"
-    if llm.available():
-        try:
-            findings = llm.analyze(data)
-        except Exception as e:
-            ai_status = f"ai_error: {type(e).__name__}: {str(e)[:120]}"
-    else:
-        ai_status = "ai_disabled: FEATHERLESS_API_KEY not set"
-
-    # 3. Fallback — if the AI gave nothing, surface the hard recon facts directly
-    #    so the scan is still useful (missing headers are a deterministic finding).
-    if not findings:
-        for h in data["missing_security_headers"]:
-            findings.append({
-                "id": f"RECON-{h}",
-                "layer": "config",
-                "severity": "low",
-                "title": f"Missing security header: {h}",
-                "evidence": f"HTTP {data['status']} from {body.url} had no '{h}' header",
-                "verified": True,  # deterministic: we directly observed its absence
-                "fix": f"Set the '{h}' response header.",
-            })
-
-    # --- machine identities (provenance): who asked, who scanned, what was scanned ---
+    # machine identities (provenance): who asked, who scanned, what was scanned
     client_ip = request.client.host if request.client else ""
     machines = {
-        "requested_from": {                         # the laptop running the extension
+        "requested_from": {
             "ip": client_ip,
             "name": _rev_dns(client_ip) or "unknown",
         },
-        "scanner": {                                # the machine running this backend
-            # inside docker the hostname is just the container id, so prefer an
-            # explicit SCANNER_NAME from env (each host sets its own in .env)
+        "scanner": {
             "name": os.environ.get("SCANNER_NAME") or socket.gethostname(),
         },
-        "target": {                                 # the machine hosting the scanned site
+        "target": {
             "url_host": host,
-            "server_banner": data["server"] or "unknown",
+            "server_banner": result["recon"]["server"] or "unknown",
             "name": _rev_dns(host) or "unknown",
         },
     }
@@ -199,15 +172,8 @@ def scan(body: ScanIn, request: Request, user: str = Depends(verify_token)):
         "target": body.url,
         "requested_by": user,
         "status": "complete",
-        "ai": ai_status,
-        "model": llm.MODEL,
         "machines": machines,
-        "recon": {
-            "status": data["status"],
-            "server": data["server"],
-            "scanned_internal": data["scanned_internal"],
-        },
-        "findings": findings,
+        **result,  # recon, agents_run, model, ai_available, findings, summary
     }
 
 
