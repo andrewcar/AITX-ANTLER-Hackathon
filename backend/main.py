@@ -17,7 +17,9 @@ import json
 import os
 import time
 
-from fastapi import Depends, FastAPI, HTTPException
+import socket
+
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -114,8 +116,20 @@ def targets(user: str = Depends(verify_token)):
     return {"targets": sorted(ALLOWLIST)}
 
 
+def _rev_dns(ip_or_host: str) -> str:
+    """Best-effort machine name for an IP or host. Returns '' if it can't resolve."""
+    if not ip_or_host:
+        return ""
+    try:
+        # if given a hostname, resolve to IP first, then reverse-lookup its name
+        ip = socket.gethostbyname(ip_or_host)
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return ""
+
+
 @app.post("/scan")
-def scan(body: ScanIn, user: str = Depends(verify_token)):
+def scan(body: ScanIn, request: Request, user: str = Depends(verify_token)):
     """
     Pipeline proof: validate scope, then return ONE stub finding.
     Later this hands the target to the orchestrator and streams real findings.
@@ -162,12 +176,32 @@ def scan(body: ScanIn, user: str = Depends(verify_token)):
                 "fix": f"Set the '{h}' response header.",
             })
 
+    # --- machine identities (provenance): who asked, who scanned, what was scanned ---
+    client_ip = request.client.host if request.client else ""
+    machines = {
+        "requested_from": {                         # the laptop running the extension
+            "ip": client_ip,
+            "name": _rev_dns(client_ip) or "unknown",
+        },
+        "scanner": {                                # the machine running this backend
+            # inside docker the hostname is just the container id, so prefer an
+            # explicit SCANNER_NAME from env (each host sets its own in .env)
+            "name": os.environ.get("SCANNER_NAME") or socket.gethostname(),
+        },
+        "target": {                                 # the machine hosting the scanned site
+            "url_host": host,
+            "server_banner": data["server"] or "unknown",
+            "name": _rev_dns(host) or "unknown",
+        },
+    }
+
     return {
         "target": body.url,
         "requested_by": user,
         "status": "complete",
         "ai": ai_status,
         "model": llm.MODEL,
+        "machines": machines,
         "recon": {
             "status": data["status"],
             "server": data["server"],
