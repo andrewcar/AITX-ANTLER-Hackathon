@@ -83,6 +83,9 @@ def map_site(url: str, session=None) -> dict:
             for href in parser.links:
                 nxt = urljoin(cur, href)
                 nu = urlparse(nxt)
+                # never follow logout links — that would end the swarm's session
+                if "logout" in nxt.lower():
+                    continue
                 if nu.hostname == target_host and nxt.split("#")[0] not in seen:
                     queue.append((nxt.split("#")[0], depth + 1))
 

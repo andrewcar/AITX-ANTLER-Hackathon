@@ -76,6 +76,34 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
             return True, "confirmed", f"SQL error reproduced ('{sig}') for '{chk['param']}'"
         return False, "rejected", f"no SQL error on re-probe for '{chk['param']}'"
 
+    if t == "sqli_boolean":
+        from agents import injection
+        sec = {"inputs": chk.get("inputs", [])}
+        m = chk.get("method", "get")
+        tb = recon.send(chk["url"], m, injection._data(sec, chk["param"], chk["true"]), session).get("body", "")
+        fb = recon.send(chk["url"], m, injection._data(sec, chk["param"], chk["false"]), session).get("body", "")
+        if tb and fb and abs(len(tb) - len(fb)) >= injection.BOOL_MIN_DIFF:
+            return True, "confirmed", f"true/false size delta reproduced ({len(tb)} vs {len(fb)})"
+        return False, "rejected", f"true/false delta not reproduced for '{chk['param']}'"
+
+    if t == "cmdi":
+        from agents import injection
+        r = recon.send(chk["url"], chk.get("method", "get"),
+                       injection._data({"inputs": chk.get("inputs", [])}, chk["param"], chk["payload"]),
+                       session)
+        if injection.UID_RE.search(r.get("body", "")):
+            return True, "confirmed", f"command output reproduced for '{chk['param']}'"
+        return False, "rejected", f"no command output on re-probe for '{chk['param']}'"
+
+    if t == "lfi":
+        from agents import injection
+        r = recon.send(chk["url"], chk.get("method", "get"),
+                       injection._data({"inputs": chk.get("inputs", [])}, chk["param"], chk["payload"]),
+                       session)
+        if injection.PASSWD_RE.search(r.get("body", "")):
+            return True, "confirmed", f"/etc/passwd reproduced via '{chk['param']}'"
+        return False, "rejected", f"/etc/passwd not reproduced for '{chk['param']}'"
+
     if t == "exposed_path":
         p, sig = chk["path"], chk.get("sig")
         r = recon.probe(url.rstrip("/") + p, session)
