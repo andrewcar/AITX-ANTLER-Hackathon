@@ -122,6 +122,9 @@ def scan(body: ScanIn, user: str = Depends(verify_token)):
     """
     from urllib.parse import urlparse
 
+    import llm
+    import recon
+
     host = urlparse(body.url).hostname or ""
     if host not in ALLOWLIST:
         raise HTTPException(
@@ -129,22 +132,48 @@ def scan(body: ScanIn, user: str = Depends(verify_token)):
             f"target '{host or body.url}' is not on the allowlist — refusing to scan",
         )
 
-    # --- stub finding (replace with orchestrator call) ---
+    # 1. REAL recon — collect factual evidence from the target
+    try:
+        data = recon.scan(body.url)
+    except Exception as e:
+        raise HTTPException(502, f"could not reach target: {type(e).__name__}: {e}")
+
+    # 2. AI triage — the LLM explains the evidence into findings
+    findings, ai_status = [], "ok"
+    if llm.available():
+        try:
+            findings = llm.analyze(data)
+        except Exception as e:
+            ai_status = f"ai_error: {type(e).__name__}: {str(e)[:120]}"
+    else:
+        ai_status = "ai_disabled: FEATHERLESS_API_KEY not set"
+
+    # 3. Fallback — if the AI gave nothing, surface the hard recon facts directly
+    #    so the scan is still useful (missing headers are a deterministic finding).
+    if not findings:
+        for h in data["missing_security_headers"]:
+            findings.append({
+                "id": f"RECON-{h}",
+                "layer": "config",
+                "severity": "low",
+                "title": f"Missing security header: {h}",
+                "evidence": f"HTTP {data['status']} from {body.url} had no '{h}' header",
+                "verified": True,  # deterministic: we directly observed its absence
+                "fix": f"Set the '{h}' response header.",
+            })
+
     return {
         "target": body.url,
         "requested_by": user,
         "status": "complete",
-        "findings": [
-            {
-                "id": "STUB-001",
-                "layer": "config",
-                "severity": "info",
-                "title": "Pipeline OK — missing Content-Security-Policy header (example)",
-                "evidence": f"GET {body.url} returned no CSP header",
-                "verified": False,
-                "fix": "Add a Content-Security-Policy response header scoped to your origins.",
-            }
-        ],
+        "ai": ai_status,
+        "model": llm.MODEL,
+        "recon": {
+            "status": data["status"],
+            "server": data["server"],
+            "scanned_internal": data["scanned_internal"],
+        },
+        "findings": findings,
     }
 
 
