@@ -15,11 +15,12 @@ import llm
 import recon
 import reporter
 import verifier
-from agents import config_headers
+from agents import config_headers, exposed_paths
 
 # the swarm roster. add agents here to expand breadth; pipeline is unchanged.
 AGENTS = {
     "config_headers": config_headers.run,
+    "exposed_paths": exposed_paths.run,
 }
 
 

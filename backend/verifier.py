@@ -39,7 +39,7 @@ def verify_all(findings: list[dict], url: str) -> list[dict]:
     for f in findings:
         src = f.get("source")
         if src == "deterministic":
-            v, verdict, note = _verify_deterministic(f, fresh, fresh_headers, fresh_cookies)
+            v, verdict, note = _verify_deterministic(f, fresh, fresh_headers, fresh_cookies, url)
         else:
             v, verdict, note = _verify_ai(f, fresh_headers, fresh_cookies, corpus)
         f["verified"] = v
@@ -48,9 +48,21 @@ def verify_all(findings: list[dict], url: str) -> list[dict]:
     return findings
 
 
-def _verify_deterministic(f, fresh, headers, cookies):
+def _verify_deterministic(f, fresh, headers, cookies, url):
     chk = f.get("check", {})
     t = chk.get("type")
+
+    if t == "exposed_path":
+        p, sig = chk["path"], chk.get("sig")
+        r = recon.probe(url.rstrip("/") + p)
+        ok = r["status"] == 200
+        if chk.get("expect_file") and recon.looks_like_app_html(r["snippet"]):
+            ok = False  # came back as the app shell, not a file
+        if sig and sig.lower() not in r["snippet"].lower():
+            ok = False
+        if ok:
+            return True, "confirmed", f"{p} still exposed (200) on re-probe"
+        return False, "rejected", f"{p} not a real exposure on re-probe (status {r['status']})"
 
     if t == "missing_header":
         h = chk["header"]

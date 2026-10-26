@@ -13,7 +13,15 @@
     .muted { color: var(--muted); font-size: 12px; }
     .hidden { display:none; }
     .finding { border:1px solid #2a2e36; border-radius:6px; padding:8px; margin-top:8px; }
+    .finding.rejected { opacity:.55; }
     .sev { display:inline-block; padding:1px 6px; border-radius:4px; font-size:11px; background:#2a2e36; }
+    .badge { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; font-weight:700; margin-right:4px; }
+    .v-confirmed { background:#16351f; color:#5ee08a; }
+    .v-unverified { background:#3a3320; color:#e8c35a; }
+    .v-rejected { background:#2a2e36; color:#9aa0a6; text-decoration:line-through; }
+    .src { font-size:10px; color:var(--muted); border:1px solid #2a2e36; border-radius:4px; padding:0 4px; margin-left:4px; }
+    .summary { margin-top:6px; padding:6px 8px; background:#14171d; border-radius:6px; font-size:12px; }
+    .machines { margin-top:8px; font-size:11px; color:var(--muted); line-height:1.5; }
     .err { color: var(--err); }
     .ok { color: var(--ok); }
     #target { font-size:12px; color:var(--muted); word-break:break-all; margin-bottom:8px; }

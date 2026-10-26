@@ -93,30 +93,60 @@ async function scan() {
       $("results").innerHTML = `<div class="err">${data.detail || "scan error"}</div>`;
       return;
     }
-    renderFindings(data.findings || []);
+    render(data);
   } catch (e) {
     $("results").innerHTML = '<div class="err">Backend unreachable.</div>';
   }
 }
 
-function renderFindings(findings) {
-  if (!findings.length) {
-    $("results").innerHTML = '<div class="ok">No findings.</div>';
-    return;
-  }
-  $("results").innerHTML =
-    '<div class="ok">Pipeline OK — ' + findings.length + ' finding(s):</div>' +
-    findings
-      .map(
-        (f) => `
-      <div class="finding">
-        <span class="sev">${f.severity}</span> <strong>${f.title}</strong>
-        <div class="muted">${f.layer} · ${f.verified ? "verified" : "unverified"}</div>
-        <div class="muted">${f.evidence}</div>
-        <div><em>Fix:</em> ${f.fix}</div>
-      </div>`
-      )
-      .join("");
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])
+  );
+}
+
+function render(data) {
+  const findings = data.findings || [];
+  const s = data.summary || {};
+  const m = data.machines || {};
+
+  const summary =
+    `<div class="summary">` +
+    `<strong>${s.total ?? findings.length}</strong> finding(s) · ` +
+    `<span class="ok">✓ ${s.confirmed ?? 0} confirmed</span> · ` +
+    `⚠ ${s.unverified ?? 0} unverified · ` +
+    `<span class="muted">✗ ${s.rejected ?? 0} rejected</span>` +
+    `<div class="muted">agents: ${(data.agents_run || []).join(", ")} · model: ${esc(data.model || "?")}</div>` +
+    `</div>`;
+
+  const items = findings.length
+    ? findings
+        .map((f) => {
+          const vclass =
+            f.verdict === "confirmed" ? "v-confirmed" :
+            f.verdict === "rejected" ? "v-rejected" : "v-unverified";
+          return `
+      <div class="finding ${f.verdict === "rejected" ? "rejected" : ""}">
+        <span class="badge ${vclass}">${esc(f.verdict || "?")}</span>
+        <span class="sev">${esc(f.severity)}</span>
+        <span class="src">${f.source === "ai" ? "AI" : "check"}</span>
+        <strong>${esc(f.title)}</strong>
+        <div class="muted">${esc(f.layer)}</div>
+        <div class="muted">${esc(f.evidence)}</div>
+        <div><em>Fix:</em> ${esc(f.fix)}</div>
+      </div>`;
+        })
+        .join("")
+    : '<div class="ok">No findings.</div>';
+
+  const machines =
+    `<div class="machines">` +
+    `from <strong>${esc(m.requested_from?.name)}</strong> (${esc(m.requested_from?.ip)}) → ` +
+    `scanner <strong>${esc(m.scanner?.name)}</strong> → ` +
+    `target <strong>${esc(m.target?.name)}</strong> [${esc(m.target?.server_banner)}]` +
+    `</div>`;
+
+  $("results").innerHTML = summary + items + machines;
 }
 
 // wire up

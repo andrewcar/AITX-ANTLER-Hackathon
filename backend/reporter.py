@@ -16,6 +16,8 @@ def _key(f: dict) -> tuple:
         return ("config", "hdr:" + chk["header"])
     if chk.get("type") == "cookie_flag":
         return ("cookie", f"cookie:{chk['cookie']}:{chk['flag']}")
+    if chk.get("type") == "exposed_path":
+        return ("surface", "path:" + chk["path"])
     return (f.get("layer", ""), f.get("title", "").strip().lower()[:50])
 
 

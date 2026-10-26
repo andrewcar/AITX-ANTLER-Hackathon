@@ -43,6 +43,37 @@ def resolve(url: str) -> str:
     return url  # not mapped (e.g. native localhost dev) -> use as-is
 
 
+def looks_like_app_html(snippet: str) -> bool:
+    """True if the body looks like a rendered web page (SPA/app shell), not a file.
+    Note: PHP source ('<?php ...') is NOT app html — we want to catch those."""
+    s = snippet.lower()
+    return any(t in s for t in ("<!doctype", "<html", "<!--", "<head"))
+
+
+def probe(full_url: str) -> dict:
+    """GET a specific URL/path. Returns status, body length, and a small snippet.
+    Used by the surface agent to check for exposed paths. Never raises."""
+    internal = resolve(full_url)
+    req = urllib.request.Request(internal, headers={"User-Agent": "VulnSwarm/0.1 probe"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=8)
+        status, body = resp.status, resp.read(4096)
+    except urllib.error.HTTPError as e:
+        status = e.code
+        try:
+            body = e.read(4096)
+        except Exception:
+            body = b""
+    except Exception:
+        return {"url": full_url, "status": 0, "length": 0, "snippet": ""}
+    return {
+        "url": full_url,
+        "status": status,
+        "length": len(body),
+        "snippet": body[:300].decode("utf-8", "replace"),
+    }
+
+
 def scan(url: str) -> dict:
     """GET the target and collect factual evidence. Raises on network failure."""
     internal = resolve(url)
