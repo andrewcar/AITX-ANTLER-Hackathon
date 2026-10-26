@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root { --bg:#0f1115; --fg:#e6e6e6; --muted:#9aa0a6; --accent:#4f8cff; --ok:#38c172; --err:#ff6b6b; }
+    body { width: 340px; margin: 0; font: 13px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+    header { padding: 12px 14px; border-bottom: 1px solid #222; font-weight: 600; }
+    main { padding: 14px; }
+    input { width: 100%; box-sizing: border-box; padding: 8px; margin: 4px 0 10px; background:#1a1d23; border:1px solid #2a2e36; border-radius:6px; color:var(--fg); }
+    button { width: 100%; padding: 9px; background: var(--accent); color:#fff; border:0; border-radius:6px; cursor:pointer; font-weight:600; }
+    button.secondary { background:#2a2e36; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .hidden { display:none; }
+    .finding { border:1px solid #2a2e36; border-radius:6px; padding:8px; margin-top:8px; }
+    .sev { display:inline-block; padding:1px 6px; border-radius:4px; font-size:11px; background:#2a2e36; }
+    .err { color: var(--err); }
+    .ok { color: var(--ok); }
+    #target { font-size:12px; color:var(--muted); word-break:break-all; margin-bottom:8px; }
+  </style>
+</head>
+<body>
+  <header>VulnSwarm <span class="muted">· pipeline proof</span></header>
+  <main>
+    <!-- login view -->
+    <section id="loginView">
+      <div class="muted">Backend URL (the tower/server running the API):</div>
+      <input id="api" type="text" placeholder="http://10.0.0.32:8000" />
+      <div class="muted">Sign in to the backend.</div>
+      <input id="email" type="email" placeholder="email" value="erwin@local" />
+      <input id="password" type="password" placeholder="password" value="demo" />
+      <button id="loginBtn">Sign in</button>
+      <div id="loginMsg" class="err"></div>
+    </section>
+
+    <!-- scan view -->
+    <section id="scanView" class="hidden">
+      <div class="muted">Signed in as <span id="who"></span> · <a href="#" id="logout" class="muted">logout</a></div>
+      <div id="target"></div>
+      <button id="scanBtn">Scan this tab</button>
+      <div id="results"></div>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

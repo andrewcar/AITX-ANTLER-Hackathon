@@ -1,0 +1,47 @@
+# VulnSwarm lab stack — runs on the tower (10.0.0.32).
+#
+#   backend   :8000  the swarm API (extension/dashboard talk to this)
+#   juice     :3001  OWASP Juice Shop  — modern JS/Node vulnerable app
+#   dvwa      :8081  Damn Vulnerable Web App — classic PHP/MySQL (your PHP angle)
+#
+# Port 3000 is already in use on the tower, so targets use 3001 / 8081.
+#
+# From the LAPTOP you browse e.g.  http://10.0.0.32:3001  then hit "Scan this tab";
+# the extension sends that URL to the backend at http://10.0.0.32:8000.
+#
+# SCOPE: these are intentionally-vulnerable apps WE host for testing. Keep them on
+# the lab network only — never expose them to the public internet.
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"          # published on all tower interfaces -> reachable over LAN
+    environment:
+      - VULNSWARM_SECRET=change-me-in-real-use
+    restart: unless-stopped
+
+  juice:
+    image: bkimminich/juice-shop:v18.0.0
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+
+  dvwa:
+    image: ghcr.io/digininja/dvwa:latest
+    ports:
+      - "8081:80"
+    environment:
+      - DB_SERVER=dvwa-db        # point DVWA at the db service below, not 127.0.0.1
+    depends_on:
+      - dvwa-db
+    restart: unless-stopped
+
+  dvwa-db:
+    image: mariadb:10
+    environment:
+      - MYSQL_ROOT_PASSWORD=dvwa
+      - MYSQL_DATABASE=dvwa
+      - MYSQL_USER=dvwa
+      - MYSQL_PASSWORD=p@ssw0rd  # matches DVWA's default config.inc.php
+    restart: unless-stopped
