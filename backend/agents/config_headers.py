@@ -27,7 +27,8 @@ def _cookie_name(raw: str) -> str:
     return raw.split("=", 1)[0].strip()
 
 
-def run(recon_data: dict) -> list[dict]:
+def run(section: dict, ctx) -> list[dict]:
+    recon_data = ctx.recon_root
     findings: list[dict] = []
 
     # --- deterministic: missing security headers ---

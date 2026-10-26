@@ -52,6 +52,27 @@ def _verify_deterministic(f, fresh, headers, cookies, url):
     chk = f.get("check", {})
     t = chk.get("type")
 
+    if t == "xss_reflect":
+        import random
+        import string
+        from agents import injection
+        mark = "vqs" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        payload = f'"><{mark}>'
+        r = recon.send(chk["url"], chk.get("method", "get"),
+                       injection._data({"inputs": chk.get("inputs", [])}, chk["param"], payload))
+        if f"<{mark}>" in r.get("body", ""):
+            return True, "confirmed", f"marker reflected unescaped in '{chk['param']}' on re-probe"
+        return False, "rejected", f"marker not reflected in '{chk['param']}' on re-probe"
+
+    if t == "sqli_error":
+        from agents import injection
+        r = recon.send(chk["url"], chk.get("method", "get"),
+                       injection._data({"inputs": chk.get("inputs", [])}, chk["param"], "'"))
+        sig = injection.sql_error_in(r.get("body", ""))
+        if sig:
+            return True, "confirmed", f"SQL error reproduced ('{sig}') for '{chk['param']}'"
+        return False, "rejected", f"no SQL error on re-probe for '{chk['param']}'"
+
     if t == "exposed_path":
         p, sig = chk["path"], chk.get("sig")
         r = recon.probe(url.rstrip("/") + p)

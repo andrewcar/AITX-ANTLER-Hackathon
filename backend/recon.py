@@ -43,6 +43,60 @@ def resolve(url: str) -> str:
     return url  # not mapped (e.g. native localhost dev) -> use as-is
 
 
+def send(full_url: str, method: str = "get", data: dict | None = None) -> dict:
+    """Send a GET/POST with params (for active injection probing). Never raises.
+    Only used against allowlisted lab targets we own."""
+    from urllib.parse import urlencode
+
+    data = data or {}
+    internal = resolve(full_url)
+    if method.lower() == "post":
+        req = urllib.request.Request(
+            internal, data=urlencode(data).encode(),
+            headers={"User-Agent": "VulnSwarm/0.1 probe"}, method="POST")
+    else:
+        if data:
+            sep = "&" if urlparse(internal).query else "?"
+            internal = internal + sep + urlencode(data)
+        req = urllib.request.Request(internal, headers={"User-Agent": "VulnSwarm/0.1 probe"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        status, body = resp.status, resp.read(16000)
+    except urllib.error.HTTPError as e:
+        status = e.code
+        try:
+            body = e.read(16000)
+        except Exception:
+            body = b""
+    except Exception:
+        return {"status": 0, "body": ""}
+    return {"status": status, "body": body.decode("utf-8", "replace")}
+
+
+def get(full_url: str, max_bytes: int = 200_000) -> dict:
+    """Fetch a page's full-ish body (for the crawler). Never raises."""
+    internal = resolve(full_url)
+    req = urllib.request.Request(internal, headers={"User-Agent": "VulnSwarm/0.1 crawler"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        status, headers, body = resp.status, resp.headers, resp.read(max_bytes)
+    except urllib.error.HTTPError as e:
+        status, headers = e.code, e.headers
+        try:
+            body = e.read(max_bytes)
+        except Exception:
+            body = b""
+    except Exception:
+        return {"url": full_url, "status": 0, "headers": {}, "body": ""}
+    ctype = (headers.get("Content-Type") or "").lower()
+    return {
+        "url": full_url,
+        "status": status,
+        "content_type": ctype,
+        "body": body.decode("utf-8", "replace"),
+    }
+
+
 def looks_like_app_html(snippet: str) -> bool:
     """True if the body looks like a rendered web page (SPA/app shell), not a file.
     Note: PHP source ('<?php ...') is NOT app html — we want to catch those."""

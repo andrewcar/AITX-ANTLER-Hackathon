@@ -116,7 +116,9 @@ function render(data) {
     `<span class="ok">✓ ${s.confirmed ?? 0} confirmed</span> · ` +
     `⚠ ${s.unverified ?? 0} unverified · ` +
     `<span class="muted">✗ ${s.rejected ?? 0} rejected</span>` +
-    `<div class="muted">agents: ${(data.agents_run || []).join(", ")} · model: ${esc(data.model || "?")}</div>` +
+    (data.fingerprint ? `<div class="muted">stack: ${esc(data.fingerprint.stack)}/${esc(data.fingerprint.lang)}</div>` : "") +
+    (data.surface ? `<div class="muted">surface: ${data.surface.pages} pages · ${data.surface.forms} forms · ${data.surface.params} params → ${data.units} work units</div>` : "") +
+    `<div class="muted">specialists: ${(data.specialists_run || data.agents_run || []).join(", ")} · model: ${esc(data.model || "?")}</div>` +
     `</div>`;
 
   const items = findings.length

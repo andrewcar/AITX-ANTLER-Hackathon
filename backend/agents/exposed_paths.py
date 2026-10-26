@@ -43,7 +43,8 @@ def _same_as(a: dict, b: dict) -> bool:
     return a["length"] == b["length"] and a["snippet"][:120] == b["snippet"][:120]
 
 
-def run(recon_data: dict) -> list[dict]:
+def run(section: dict, ctx) -> list[dict]:
+    recon_data = ctx.recon_root
     base = (recon_data.get("url", "") or "").rstrip("/")
     if not base:
         return []
