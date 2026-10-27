@@ -14,12 +14,18 @@ reach the orchestrator by skipping the handler.
 
 GUARDRAILS: a kill switch (one scan, or every in-flight scan), a concurrency
 cap, per-request pacing, and an append-only audit log. See control.py and audit.py.
+
+GET /preview only describes how the dashboard should draw a target. Off-list
+hosts are not fetched. It does not start a scan and it does not follow redirects.
 """
 import hashlib
 import hmac
 import json
 import os
+import re
 import time
+import urllib.error
+import urllib.request
 from urllib.parse import urlparse
 
 import socket
@@ -337,6 +343,117 @@ def scan_stop(body: StopIn | None = None, user: str = Depends(verify_token)):
         target="",
     )
     return {"stopped": stopped, "active": control.active_ids()}
+
+
+class _PreviewNoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would send the next request wherever Location says. Don't."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_preview_opener = urllib.request.build_opener(_PreviewNoRedirect)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+
+
+def _header_map(headers) -> dict:
+    if headers is None:
+        return {}
+    try:
+        pairs = headers.items()
+    except Exception:
+        return {}
+    return {str(k).lower(): v for k, v in pairs}
+
+
+def _html_title(body: bytes) -> str:
+    match = _TITLE_RE.search(body.decode("utf-8", "replace"))
+    if not match:
+        return ""
+    text = re.sub(r"\s+", " ", match.group(1)).strip()
+    return text[:120]
+
+
+def _frameable(headers: dict) -> bool:
+    """True when the dashboard's origin is allowed to embed this response.
+
+    sameorigin and frame-ancestors 'self' still block us: the dashboard is a
+    different origin from the lab target. Only an explicit wildcard (or no
+    framing policy at all) counts as embeddable.
+    """
+    xfo = (headers.get("x-frame-options") or "").split(",")[0].strip().lower()
+    if xfo in {"deny", "sameorigin"}:
+        return False
+    match = re.search(r"frame-ancestors\s+([^;]+)", headers.get("content-security-policy") or "", re.I)
+    if not match:
+        return True
+    return match.group(1).split() == ["*"]
+
+
+def _preview_pack(status: int, headers, body: bytes) -> dict:
+    mapped = _header_map(headers)
+    frameable = 200 <= status < 300 and _frameable(mapped)
+    return {
+        "mode": "iframe" if frameable else "placeholder",
+        "frameable": frameable,
+        "status": int(status),
+        "title": _html_title(body or b""),
+        "server": mapped.get("server") or "",
+    }
+
+
+def fetch_preview(url: str) -> dict:
+    """GET one allowlisted URL for the dashboard thumbnail. No redirects.
+
+    A failure becomes a placeholder. The caller has already checked the allowlist,
+    so this never runs for an off-list host.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "VulnSwarm/0.1"}, method="GET")
+    try:
+        resp = _preview_opener.open(req, timeout=1.5)
+        try:
+            return _preview_pack(getattr(resp, "status", 200), resp.headers, resp.read(4000))
+        finally:
+            resp.close()
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(2000)
+        except Exception:
+            body = b""
+        return _preview_pack(e.code, e.headers, body)
+    except Exception:
+        return {
+            "mode": "placeholder",
+            "frameable": False,
+            "status": 0,
+            "title": "",
+            "server": "",
+        }
+
+
+@app.get("/preview")
+def preview(url: str, user: str = Depends(verify_token)):
+    """How to draw this target. Off-list hosts are not contacted."""
+    try:
+        host = allowlisted_host(url)
+    except ScopeError:
+        return {
+            "allowlisted": False,
+            "mode": "placeholder",
+            "frameable": False,
+            "url": url,
+            "host": urlparse(url).hostname or "",
+            "title": urlparse(url).hostname or url,
+            "status": 0,
+            "server": "",
+        }
+    info = fetch_preview(url)
+    info["allowlisted"] = True
+    info["url"] = url
+    info["host"] = host
+    if not info.get("title"):
+        info["title"] = host
+    return info
 
 
 @app.get("/audit")
