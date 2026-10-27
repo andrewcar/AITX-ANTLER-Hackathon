@@ -33,15 +33,15 @@ def format_sse(event: dict) -> str:
     return f"event: {kind}\ndata: {payload}\n\n"
 
 
-def start_scan_thread(produce) -> tuple[queue.Queue, threading.Event]:
+def start_scan_thread(produce, stop: threading.Event | None = None) -> tuple[queue.Queue, threading.Event]:
     """Run produce(on_event, stop) on a daemon thread. on_event is thread-safe.
 
     produce owns the scan. When it returns or raises, a sentinel is queued and
-    the stream ends. stop is set when the client goes away; produce should pass
-    it to the orchestrator so later phases do not start.
+    the stream ends. stop is set when the client goes away. Pass the scan
+    lease's event so a disconnect and POST /scan/stop share one signal.
     """
     events: queue.Queue = queue.Queue()
-    stop = threading.Event()
+    stop = stop or threading.Event()
 
     def worker():
         try:
@@ -80,9 +80,8 @@ async def sse_frames(events: queue.Queue, stop: threading.Event):
             # is visible while the phase is still working.
             await asyncio.sleep(0)
     finally:
-        # Client disconnect, or the generator was closed. The scan thread
-        # notices between phases. This is per-request cancel, not a global
-        # kill switch — see the streaming endpoint notes.
+        # Client disconnect cancels this generator. Setting the lease event
+        # here is what makes the in-flight scan notice, on its next request poll.
         stop.set()
 
 

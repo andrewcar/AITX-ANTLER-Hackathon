@@ -11,6 +11,7 @@ Stdlib only (html.parser). Kept small and safe: capped pages/depth, no JS execut
 import html.parser
 from urllib.parse import urljoin, urlparse, parse_qs
 
+import control
 import recon
 
 MAX_PAGES = 15
@@ -50,6 +51,7 @@ def map_site(url: str, session=None) -> dict:
     pages, forms, params = [], [], []
 
     while queue and len(pages) < MAX_PAGES:
+        control.checkpoint()
         cur, depth = queue.pop(0)
         if cur in seen:
             continue

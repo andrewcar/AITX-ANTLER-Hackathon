@@ -9,9 +9,12 @@ Internal addressing: the browser submits http://10.0.0.32:3001, but inside docke
 backend reaches targets by service name. TARGET_MAP translates public host:port ->
 internal base so scans work the same for everyone.
 """
+import threading
 import urllib.error
 import urllib.request
 from urllib.parse import urlencode, urljoin, urlparse
+
+import control
 
 TARGET_MAP = {
     ("10.0.0.32", "3001"): "http://juice:3000",
@@ -80,11 +83,48 @@ def looks_like_app_html(snippet: str) -> bool:
     return any(t in s for t in ("<!doctype", "<html", "<!--", "<head"))
 
 
+def _exchange(req, timeout, read):
+    """Run one urllib call. The caller polls so a kill switch can abandon the wait.
+
+    The worker thread is not killed mid-socket — urllib cannot do that — but the
+    scan stops waiting within a few dozen milliseconds and issues no further calls.
+    The worker only fills a local box; it does not touch the shared Session.
+    """
+    box: dict = {}
+
+    def work():
+        try:
+            resp = _no_redirect_opener.open(req, timeout=timeout)
+            box["ok"] = (resp.status, resp.headers, resp.read(read))
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read(read)
+            except Exception:
+                body = b""
+            box["ok"] = (e.code, e.headers, body)
+        except Exception as e:
+            box["err"] = e
+
+    thread = threading.Thread(target=work, name="vulnswarm-http", daemon=True)
+    thread.start()
+    while thread.is_alive():
+        control.checkpoint()
+        thread.join(0.05)
+    if "ok" in box:
+        return box["ok"]
+    return None
+
+
 def _do(internal_url, session=None, method="GET", data=None, timeout=10,
         read=16000, follow=True, _depth=0):
     """Central request. Returns (status, headers, body_bytes) or None on network fail.
     Cookies from the Session are sent and updated on every hop; redirects are followed
-    manually (when follow=True) so cookies propagate correctly."""
+    manually (when follow=True) so cookies propagate correctly.
+
+    Raises control.ScanStopped when the current scan's kill switch is set.
+    """
+    control.checkpoint()
+    control.pace()
     headers = {"User-Agent": "VulnSwarm/0.1"}
     if session:
         h = session.header()
@@ -99,16 +139,14 @@ def _do(internal_url, session=None, method="GET", data=None, timeout=10,
             internal_url = internal_url + sep + urlencode(data)
         req = urllib.request.Request(internal_url, headers=headers)
     try:
-        resp = _no_redirect_opener.open(req, timeout=timeout)
-        status, rhdrs, body = resp.status, resp.headers, resp.read(read)
-    except urllib.error.HTTPError as e:
-        status, rhdrs = e.code, e.headers
-        try:
-            body = e.read(read)
-        except Exception:
-            body = b""
-    except Exception:
+        exchanged = _exchange(req, timeout, read)
+    except control.ScanStopped:
+        raise
+    if exchanged is None:
+        control.note_request(method, internal_url, 0)
         return None
+    status, rhdrs, body = exchanged
+    control.note_request(method, internal_url, status)
     if session and rhdrs is not None:
         session.update(rhdrs)
     if follow and status in _REDIRECT_CODES and _depth < 5 and rhdrs is not None:

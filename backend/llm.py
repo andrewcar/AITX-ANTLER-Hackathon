@@ -37,6 +37,8 @@ def available() -> bool:
 
 def analyze(recon: dict) -> list[dict]:
     """Turn recon data into findings. Returns [] on any LLM error (caller handles)."""
+    import control
+    control.checkpoint()
     if _client is None:
         raise RuntimeError("FEATHERLESS_API_KEY not set")
 

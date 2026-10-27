@@ -244,9 +244,10 @@ def test_blocking_scan_and_stream_share_allowlist(monkeypatch):
 def test_blocking_scan_response_shape(monkeypatch):
     monkeypatch.setattr(main, "_rev_dns", lambda _host: "")
 
-    def fake(url, on_event=None, should_stop=None):
+    def fake(url, on_event=None, should_stop=None, run_id=None):
         assert on_event is None
-        assert should_stop is None
+        assert callable(should_stop)
+        assert run_id
         return {
             "run_id": "run_block",
             "auth": {"authenticated": False, "scheme": "none"},
@@ -285,7 +286,7 @@ def test_phase_start_arrives_while_that_phase_is_still_running(monkeypatch):
     """A phase start must hit the client before the phase's own work finishes."""
     monkeypatch.setattr(main, "_rev_dns", lambda _host: "")
 
-    def slow(url, on_event=None, should_stop=None):
+    def slow(url, on_event=None, should_stop=None, run_id=None):
         on_event({"type": "phase", "phase": "MAP", "status": "started"})
         time.sleep(0.45)
         on_event({"type": "phase", "phase": "MAP", "status": "finished", "detail": {"pages": 1}})
@@ -333,7 +334,7 @@ def test_phase_start_arrives_while_that_phase_is_still_running(monkeypatch):
 def test_stream_flushes_scan_started_before_the_scan_finishes(monkeypatch):
     monkeypatch.setattr(main, "_rev_dns", lambda _host: "")
 
-    def slow(url, on_event=None, should_stop=None):
+    def slow(url, on_event=None, should_stop=None, run_id=None):
         on_event({
             "type": "scan_started",
             "url": url,
@@ -419,7 +420,7 @@ def test_stream_events_carry_provenance_and_severity(monkeypatch):
     monkeypatch.setattr(main, "_rev_dns", lambda _host: "")
     seen = {}
 
-    def scripted(url, on_event=None, should_stop=None):
+    def scripted(url, on_event=None, should_stop=None, run_id=None):
         seen["should_stop"] = should_stop
         on_event({"type": "scan_started", "url": url, "run_id": "run_script", "agents": ["injection"]})
         on_event({

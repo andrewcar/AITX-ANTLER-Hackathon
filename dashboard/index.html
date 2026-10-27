@@ -25,7 +25,10 @@
   button { background:var(--accent); color:#fff; border:0; border-radius:8px;
            padding:8px 14px; font-weight:700; cursor:pointer; }
   button.ghost { background:var(--panel); border:1px solid var(--line); color:var(--fg); }
+  button.danger { background:#c92a2a; color:#fff; font-weight:800; letter-spacing:.12em;
+                  padding:12px 18px; font-size:18px; }
   button:disabled { opacity:.45; cursor:default; }
+  .limits { color:var(--muted); font-size:14px; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .muted { color:var(--muted); }
   .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
@@ -135,6 +138,20 @@
   .report { margin-top:18px; }
   .report:empty { display:none; }
   .report h2 { font-size:20px; margin:0; }
+  .stage { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:16px; align-items:start; }
+  .activity { position:sticky; top:12px; background:var(--panel); border:1px solid var(--line);
+              border-radius:12px; padding:12px 14px 8px; max-height:calc(100vh - 24px);
+              display:flex; flex-direction:column; }
+  .activity h3 { margin:0; font-size:18px; letter-spacing:.04em; }
+  .activity-head { display:flex; align-items:baseline; gap:8px; margin-bottom:8px; }
+  .activity-list { overflow:auto; display:flex; flex-direction:column; gap:2px; }
+  .act { font-size:15px; border-bottom:1px solid var(--line); padding:7px 2px; }
+  .act time { color:var(--muted); font-variant-numeric:tabular-nums; font-size:13px; }
+  .act .who { font-weight:800; }
+  .act .url { color:var(--muted); font-family:ui-monospace,monospace; font-size:13px; word-break:break-all; }
+  .st-ok { color:var(--ok); font-weight:800; }
+  .st-bad { color:var(--hi); font-weight:800; }
+  .st-warn { color:var(--warn); font-weight:800; }
   @keyframes rise { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:none; } }
   @keyframes blink { 50% { opacity:.35; } }
   @media (max-width:900px) {
@@ -143,6 +160,8 @@
     .phase-rail li { flex:1 1 30%; }
     .hero-title, .target-name { font-size:26px; }
     .clock { font-size:24px; }
+    .stage { grid-template-columns:1fr; }
+    .activity { position:static; max-height:360px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .live-dot, .tick.running, .finding { animation:none; }
@@ -154,7 +173,9 @@
   <h1>VulnSwarm</h1><span class="sub">live swarm</span>
   <div class="right">
     <input id="api" style="width:220px" aria-label="Backend URL" />
+    <span id="limits" class="limits hidden"></span>
     <span id="who" class="muted"></span>
+    <button id="stopAll" class="danger hidden" type="button">STOP ALL</button>
     <button id="logout" class="ghost hidden" type="button">logout</button>
   </div>
 </header>
@@ -169,12 +190,23 @@
   </section>
 
   <section id="appView" class="hidden">
-    <div class="row" style="justify-content:space-between;margin-bottom:10px">
-      <h2 style="font-size:18px;margin:0">Targets</h2>
-      <button id="scanAll" class="ghost" type="button">Scan all</button>
+    <div class="stage">
+      <div>
+        <div class="row" style="justify-content:space-between;margin-bottom:10px">
+          <h2 style="font-size:18px;margin:0">Targets</h2>
+          <button id="scanAll" class="ghost" type="button">Scan all</button>
+        </div>
+        <div id="cards" class="cards"></div>
+        <div id="result"></div>
+      </div>
+      <aside id="activity" class="activity" aria-live="polite">
+        <div class="activity-head">
+          <h3>Activity</h3>
+          <span class="muted" style="font-size:13px">audit log</span>
+        </div>
+        <div id="activityList" class="activity-list"></div>
+      </aside>
     </div>
-    <div id="cards" class="cards"></div>
-    <div id="result"></div>
   </section>
 </main>
 <script>
@@ -211,6 +243,7 @@ let scanGen = 0;
 let activeScan = null;
 let session = null;
 let clockTimer = null;
+let auditTimer = null;
 
 async function api(path, opts={}) {
   const res = await fetch(store.api + path, {
@@ -240,6 +273,7 @@ function enterApp(email) {
   $("logout").classList.remove("hidden");
   $("who").textContent = email || "";
   loadTargets();
+  startAudit();
 }
 
 async function loadTargets() {
@@ -285,7 +319,7 @@ function theaterHTML(name, url) {
           <div class="target-url">${esc(url)}</div>
         </div>
         <div id="clock" class="clock">00:00</div>
-        <button id="stopBtn" class="ghost" type="button">Stop</button>
+        <button id="stopBtn" class="danger" type="button">STOP</button>
       </div>
       <ol class="phase-rail">${phases}</ol>
       <div id="hero" class="hero tone-phase">
@@ -377,9 +411,11 @@ function apply(sess, ev) {
   if (!ev || sess.closed || sess.gen !== scanGen) return;
   const type = ev.type;
   if (type === "scan_started") {
+    if (ev.run_id) sess.runId = ev.run_id;
     setLive("LIVE");
     setHero("LIVE", "Scan started", ev.run_id || "", "phase");
     (ev.agents || []).forEach(name => ensureLane(sess, name));
+    refreshAudit();
     return;
   }
   if (type === "phase") {
@@ -584,8 +620,112 @@ async function readSSE(body, onEvent) {
 }
 
 function requestStop() {
+  const runId = session && session.runId;
+  if (runId) {
+    api("/scan/stop", { method: "POST", body: JSON.stringify({ run_id: runId }) })
+      .then(refreshAudit).catch(() => {});
+  }
   if (session) session.closed = true;
   if (activeScan) activeScan.abort();
+}
+
+async function stopAll() {
+  try {
+    await api("/scan/stop", { method: "POST", body: JSON.stringify({ all: true }) });
+  } catch {}
+  if (session) {
+    session.closed = true;
+    session.stopAll = true;
+  }
+  if (activeScan) activeScan.abort();
+  setLive("STOPPED", "bad");
+  setHero("STOPPED", "All scans stopped", "Every in-flight scan halts on its next request.", "bad");
+  refreshAudit();
+}
+
+function startAudit() {
+  $("stopAll").classList.remove("hidden");
+  $("limits").classList.remove("hidden");
+  refreshAudit();
+  if (auditTimer) clearInterval(auditTimer);
+  auditTimer = setInterval(refreshAudit, 1000);
+}
+
+function stopAudit() {
+  if (auditTimer) clearInterval(auditTimer);
+  auditTimer = null;
+  $("stopAll").classList.add("hidden");
+  $("limits").classList.add("hidden");
+  $("limits").textContent = "";
+}
+
+async function refreshAudit() {
+  if (!store.token) return;
+  try {
+    const res = await api("/audit?limit=30");
+    if (!res.ok) return;
+    const data = await res.json();
+    paintLimits(data.limits);
+    paintActivity(data.records || []);
+  } catch {}
+}
+
+function paintLimits(limits) {
+  const el = $("limits");
+  if (!el || !limits) return;
+  const active = limits.active ?? 0;
+  const cap = limits.max_concurrent ?? 0;
+  const pace = limits.request_interval_ms ?? 0;
+  el.textContent = "cap " + active + "/" + cap + " · " + pace + "ms between requests";
+}
+
+function paintActivity(records) {
+  const list = $("activityList");
+  if (!list) return;
+  list.replaceChildren();
+  if (!records.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No scans yet.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const row of records) {
+    const item = document.createElement("div");
+    item.className = "act";
+    const time = document.createElement("time");
+    time.textContent = fmtTime(row.ts);
+    const who = document.createElement("div");
+    who.className = "who";
+    if (row.kind === "request") {
+      who.textContent = (row.agent || row.actor || "agent") + " · " + (row.action || "GET");
+    } else {
+      who.textContent = (row.actor || "scan") + " · " + (row.status || "scan");
+      if (row.detail) who.textContent += " · " + row.detail;
+    }
+    const st = document.createElement("span");
+    const status = row.status;
+    st.textContent = status == null || status === "" ? "" : " " + status;
+    const n = Number(status);
+    if (row.kind === "request") {
+      if (n >= 200 && n < 400) st.className = "st-ok";
+      else st.className = "st-bad";
+    } else if (status === "rejected" || status === "error") st.className = "st-bad";
+    else if (status === "cancelled" || status === "stop_requested") st.className = "st-warn";
+    else if (status === "complete" || status === "started") st.className = "st-ok";
+    who.appendChild(st);
+    const url = document.createElement("div");
+    url.className = "url";
+    url.textContent = row.kind === "request" ? (row.url || "") : (row.target || row.run_id || "");
+    item.append(time, who, url);
+    list.appendChild(item);
+  }
+}
+
+function fmtTime(ts) {
+  const d = new Date((Number(ts) || 0) * 1000);
+  if (!ts || !Number.isFinite(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour12: false });
 }
 
 async function scan(url, name) {
@@ -620,10 +760,20 @@ async function scan(url, name) {
         if (typeof d.detail === "string") msg = d.detail;
       } catch {}
       setLive("STOPPED", "bad");
-      setHero("BLOCKED", msg, "The allowlist check runs before a scan starts.", "bad");
+      if (res.status === 429) {
+        setHero("BUSY", msg, "The concurrency cap is full. Stop a scan or retry.", "bad");
+      } else if (res.status === 403) {
+        setHero("BLOCKED", msg, "The allowlist check runs before a scan starts.", "bad");
+      } else {
+        setHero("BLOCKED", msg, "", "bad");
+      }
+      refreshAudit();
       return;
     }
-    await readSSE(res.body, (ev) => enqueue(sess, ev));
+    await readSSE(res.body, (ev) => {
+      if (ev && ev.type === "scan_started" && ev.run_id) sess.runId = ev.run_id;
+      enqueue(sess, ev);
+    });
     if (sess.drain) await sess.drain;
     if (!sess.closed && gen === scanGen && !sess.sawTerminal) {
       setLive("STOPPED", "bad");
@@ -633,7 +783,12 @@ async function scan(url, name) {
     if (gen !== scanGen) return;
     if (e.name === "AbortError" || sess.closed) {
       setLive("STOPPED", "bad");
-      setHero("STOPPED", "Scan stopped", "The stream closed. Later phases will not start.", "bad");
+      if (sess.stopAll) {
+        setHero("STOPPED", "All scans stopped", "Every in-flight scan halts on its next request.", "bad");
+      } else {
+        setHero("STOPPED", "Scan stopped", "The stream closed. Later phases will not start.", "bad");
+      }
+      refreshAudit();
       return;
     }
     setLive("STOPPED", "bad");
@@ -687,6 +842,7 @@ function renderResult(name, d, target) {
 
 function doLogout(){
   store.token = null;
+  stopAudit();
   if (activeScan) activeScan.abort();
   $("appView").classList.add("hidden");
   $("logout").classList.add("hidden");
@@ -696,6 +852,7 @@ function doLogout(){
 
 $("loginBtn").addEventListener("click", login);
 $("logout").addEventListener("click", doLogout);
+$("stopAll").addEventListener("click", stopAll);
 $("scanAll").addEventListener("click", scanAll);
 $("password").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 $("api").value = store.api;

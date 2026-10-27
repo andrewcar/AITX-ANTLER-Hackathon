@@ -11,6 +11,9 @@ Both refuse any target that is not on ALLOWLIST before the orchestrator starts.
 SCOPE SAFETY: a host not on ALLOWLIST is rejected with HTTP 403. The streaming
 path uses the same check and re-checks inside the worker so a stream cannot
 reach the orchestrator by skipping the handler.
+
+GUARDRAILS: a kill switch (one scan, or every in-flight scan), a concurrency
+cap, per-request pacing, and an append-only audit log. See control.py and audit.py.
 """
 import hashlib
 import hmac
@@ -27,6 +30,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+import audit
+import control
 import streaming
 
 # --- config -----------------------------------------------------------------
@@ -108,6 +113,11 @@ class ScanIn(BaseModel):
     url: str
 
 
+class StopIn(BaseModel):
+    run_id: str | None = None
+    all: bool = False
+
+
 # --- routes ------------------------------------------------------------------
 @app.post("/auth/login")
 def login(body: LoginIn):
@@ -146,6 +156,36 @@ def allowlisted_host(url: str) -> str:
     return host
 
 
+def _refuse_scope(url: str, user: str) -> str:
+    """Allowlist gate. A refusal is audited and never takes a scan slot."""
+    try:
+        return allowlisted_host(url)
+    except ScopeError as e:
+        audit.record("scan", actor=user, target=url, status="rejected", detail="allowlist")
+        raise HTTPException(403, str(e))
+
+
+def _lease_or_429(url: str, user: str) -> control.ScanLease:
+    try:
+        return control.acquire(target=url, actor=user)
+    except control.BusyError as e:
+        audit.record("scan", actor=user, target=url, status="rejected", detail="rate_limit")
+        raise HTTPException(429, str(e), headers={"Retry-After": "2"})
+
+
+def _audit_outcome(lease: control.ScanLease, result: dict | None, error: str | None = None) -> None:
+    if error:
+        audit.record(
+            "scan", run_id=lease.run_id, actor=lease.actor, target=lease.target,
+            status="error", detail=error,
+        )
+        return
+    status = (result or {}).get("status") or "complete"
+    audit.record(
+        "scan", run_id=lease.run_id, actor=lease.actor, target=lease.target, status=status,
+    )
+
+
 def _rev_dns(ip_or_host: str) -> str:
     """Best-effort machine name for an IP or host. Returns '' if it can't resolve."""
     if not ip_or_host:
@@ -181,16 +221,26 @@ def scan(body: ScanIn, request: Request, user: str = Depends(verify_token)):
     """Validate scope, run the swarm, return the finished report."""
     import orchestrator
 
+    host = _refuse_scope(body.url, user)
+    lease = _lease_or_429(body.url, user)
     try:
-        host = allowlisted_host(body.url)
-    except ScopeError as e:
-        raise HTTPException(403, str(e))
+        with control.scope(lease):
+            audit.record(
+                "scan", run_id=lease.run_id, actor=user, target=body.url, status="started",
+            )
+            try:
+                result = orchestrator.run_scan(
+                    body.url, should_stop=lease.stopped, run_id=lease.run_id,
+                )
+            except Exception as e:
+                _audit_outcome(lease, None, error=type(e).__name__)
+                raise HTTPException(502, f"scan failed: {type(e).__name__}: {e}")
+            _audit_outcome(lease, result)
+    finally:
+        control.release(lease.run_id)
 
-    # run the swarm: auth -> map -> plan -> swarm -> verify -> report
-    try:
-        result = orchestrator.run_scan(body.url)
-    except Exception as e:
-        raise HTTPException(502, f"scan failed: {type(e).__name__}: {e}")
+    if result.get("status") == "cancelled":
+        raise HTTPException(409, "scan stopped")
 
     client_ip = request.client.host if request.client else ""
     return {
@@ -207,48 +257,62 @@ def scan_stream(body: ScanIn, request: Request, user: str = Depends(verify_token
     """Same swarm as /scan, pushed as Server-Sent Events while it runs.
 
     Refuses with HTTP 403 before the response starts when the host is not on
-    ALLOWLIST. The worker checks again before calling the orchestrator.
+    ALLOWLIST, and with HTTP 429 when the concurrency cap is full. The worker
+    checks the allowlist again before calling the orchestrator.
 
     Events (JSON, one per message, `type` field):
       scan_started, phase, agent, finding, verdict, scan_complete, error
 
-    A disconnected client sets a per-request stop flag checked between phases.
-    There is no global kill switch, no rate limit, and no audit log on this path.
+    Disconnect, POST /scan/stop, and POST /scan/stop with all=true set the
+    lease event. Recon checks that event on every outbound request.
     """
     import orchestrator
 
-    try:
-        host = allowlisted_host(body.url)
-    except ScopeError as e:
-        raise HTTPException(403, str(e))
-
+    host = _refuse_scope(body.url, user)
+    lease = _lease_or_429(body.url, user)
     client_ip = request.client.host if request.client else ""
     target_url = body.url
 
     def produce(on_event, stop):
-        # Backstop: never call the orchestrator for a host the allowlist rejects,
-        # even if a future caller starts the thread without the handler check.
         try:
-            allowlisted_host(target_url)
-        except ScopeError as e:
-            on_event({"type": "error", "message": str(e)})
-            return
-
-        def wrapped(ev: dict):
-            if ev.get("type") in ("scan_started", "scan_complete"):
-                ev["requested_by"] = user
-            if ev.get("type") == "scan_complete":
-                recon = ev.get("recon") if isinstance(ev.get("recon"), dict) else {}
-                ev["machines"] = machine_provenance(
-                    client_ip, host, recon.get("server") or ""
+            # Backstop: never call the orchestrator for a host the allowlist rejects,
+            # even if a future caller starts the thread without the handler check.
+            try:
+                allowlisted_host(target_url)
+            except ScopeError as e:
+                audit.record(
+                    "scan", run_id=lease.run_id, actor=user, target=target_url,
+                    status="rejected", detail="allowlist",
                 )
-            on_event(ev)
+                on_event({"type": "error", "message": str(e)})
+                return
 
-        orchestrator.run_scan(
-            target_url, on_event=wrapped, should_stop=stop.is_set
-        )
+            def wrapped(ev: dict):
+                if ev.get("type") in ("scan_started", "scan_complete"):
+                    ev["requested_by"] = user
+                if ev.get("type") == "scan_complete":
+                    recon = ev.get("recon") if isinstance(ev.get("recon"), dict) else {}
+                    ev["machines"] = machine_provenance(
+                        client_ip, host, recon.get("server") or ""
+                    )
+                on_event(ev)
 
-    events, stop = streaming.start_scan_thread(produce)
+            with control.scope(lease):
+                audit.record(
+                    "scan", run_id=lease.run_id, actor=user, target=target_url, status="started",
+                )
+                try:
+                    result = orchestrator.run_scan(
+                        target_url, on_event=wrapped, should_stop=stop.is_set, run_id=lease.run_id,
+                    )
+                except Exception as e:
+                    _audit_outcome(lease, None, error=type(e).__name__)
+                    raise
+                _audit_outcome(lease, result)
+        finally:
+            control.release(lease.run_id)
+
+    events, stop = streaming.start_scan_thread(produce, lease.event)
     return StreamingResponse(
         streaming.sse_frames(events, stop),
         media_type="text/event-stream",
@@ -257,6 +321,36 @@ def scan_stream(body: ScanIn, request: Request, user: str = Depends(verify_token
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/scan/stop")
+def scan_stop(body: StopIn | None = None, user: str = Depends(verify_token)):
+    """Stop one scan, or every in-flight scan when `all` is true or run_id is omitted."""
+    body = body or StopIn()
+    if body.all or not body.run_id:
+        stopped = control.stop_all()
+    else:
+        stopped = [body.run_id] if control.stop(body.run_id) else []
+    audit.record(
+        "scan", actor=user, status="stop_requested",
+        run_id=body.run_id or "", detail="all" if (body.all or not body.run_id) else "one",
+        target="",
+    )
+    return {"stopped": stopped, "active": control.active_ids()}
+
+
+@app.get("/audit")
+def audit_recent(limit: int = 40, user: str = Depends(verify_token)):
+    """Newest audit records first, plus the live caps so the dashboard can show them."""
+    return {
+        "records": audit.recent(limit),
+        "limits": {
+            "max_concurrent": control.max_concurrent(),
+            "request_interval_ms": int(control.request_interval_s() * 1000),
+            "global_request_interval_ms": int(control.global_interval_s() * 1000),
+            "active": len(control.active_ids()),
+        },
+    }
 
 
 @app.get("/health")

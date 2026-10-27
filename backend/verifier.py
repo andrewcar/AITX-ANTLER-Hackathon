@@ -16,6 +16,7 @@ each finding against it:
 Verdicts are honest: 'unverified' is a real outcome, not a failure. We never mark an
 AI claim 'confirmed' unless its evidence is grounded in what we actually observed.
 """
+import control
 import recon
 
 
@@ -32,6 +33,8 @@ def verify_all(findings: list[dict], url: str, session=None, on_verdict=None) ->
 
     try:
         fresh = recon.scan(url, session)
+    except control.ScanStopped:
+        raise
     except Exception as e:
         # can't get a fresh observation -> nothing can be confirmed
         for f in findings:
@@ -47,6 +50,7 @@ def verify_all(findings: list[dict], url: str, session=None, on_verdict=None) ->
               + " ".join(fresh_cookies)).lower()
 
     for f in findings:
+        control.checkpoint()
         src = f.get("source")
         if src == "deterministic":
             v, verdict, note = _verify_deterministic(f, fresh, fresh_headers,
