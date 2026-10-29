@@ -18,7 +18,7 @@ services:
     ports:
       - "8000:8000"          # published on all tower interfaces -> reachable over LAN
     environment:
-      - VULNSWARM_SECRET=change-me-in-real-use
+      - VULNSWARM_SESSION_SECRET=change-me-in-real-use
     env_file:
       - ./backend/.env       # holds FEATHERLESS_API_KEY and VULNSWARM_MODEL (gitignored)
     restart: unless-stopped

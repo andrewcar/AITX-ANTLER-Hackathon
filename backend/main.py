@@ -21,8 +21,10 @@ hosts are not fetched. It does not start a scan and it does not follow redirects
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
+import secrets
 import time
 import urllib.error
 import urllib.request
@@ -40,13 +42,32 @@ import audit
 import control
 import streaming
 
+log = logging.getLogger("vulnswarm")
+
 # --- config -----------------------------------------------------------------
-# Demo secret. In real use this comes from env / a secrets store, never hardcoded.
-SECRET = os.environ.get("VULNSWARM_SECRET", "dev-secret-change-me").encode()
 TOKEN_TTL = 60 * 60 * 8  # 8 hours
 
-# Demo users for the pipeline proof. Real version: proper user store + hashed pw.
-# password here is "demo" for both — fine for a localhost pipeline test, not prod.
+
+def _session_secret() -> bytes:
+    """HMAC key for demo bearer tokens. Prefer env; else a random per-process value."""
+    env = (
+        os.environ.get("VULNSWARM_SESSION_SECRET")
+        or os.environ.get("VULNSWARM_SECRET")  # legacy alias
+    )
+    if env:
+        return env.encode()
+    generated = secrets.token_hex(32)
+    log.warning(
+        "VULNSWARM_SESSION_SECRET is unset; using a random per-process secret. "
+        "Set VULNSWARM_SESSION_SECRET for any shared or production use."
+    )
+    return generated.encode()
+
+
+SECRET = _session_secret()
+
+# Demo users for local hackathon demos. Real version: proper user store + hashed pw.
+# password here is "demo" for both — fine for localhost only, not prod.
 USERS = {
     "erwin@local": "demo",
     "andrew@local": "demo",
@@ -67,13 +88,29 @@ LAB_TARGETS = [
     {"name": "Juice Shop", "stack": "Node / SPA", "url": "http://10.0.0.32:3001"},
 ]
 
-app = FastAPI(title="VulnSwarm backend (pipeline proof)")
+# Default CORS: local dashboard (nginx :8090 / file:// → Origin null) and common lab hosts.
+# Override with VULNSWARM_CORS_ORIGINS (comma-separated).
+_DEFAULT_CORS_ORIGINS = [
+    "http://localhost:8090",
+    "http://127.0.0.1:8090",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "null",  # dashboard opened as a local file
+]
 
-# The extension and dashboard call us from a different origin, so allow CORS.
-# Tighten to the real extension id + dashboard origin before any shared use.
+
+def _cors_origins() -> list[str]:
+    raw = os.environ.get("VULNSWARM_CORS_ORIGINS", "").strip()
+    if not raw:
+        return list(_DEFAULT_CORS_ORIGINS)
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+app = FastAPI(title="Swarmageddon — consent-first vulnerability swarm")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
