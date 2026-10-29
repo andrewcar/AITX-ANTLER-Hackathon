@@ -1,4 +1,4 @@
-// VulnSwarm extension popup — pipeline proof.
+// VulnSwarm extension popup — Swarmageddon dashboard companion.
 // Flow: login -> store token -> read current tab URL -> POST /scan -> show finding.
 
 // Default to the tower's LAN IP so the laptop works out of the box.

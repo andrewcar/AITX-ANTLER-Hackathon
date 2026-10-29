@@ -11,6 +11,7 @@ the verifier's job.
 """
 import re
 
+import control
 import llm
 
 HEADER_FIX = {
@@ -76,6 +77,8 @@ def run(section: dict, ctx) -> list[dict]:
     if llm.available():
         try:
             findings.extend(llm.analyze(recon_data))
+        except control.ScanStopped:
+            raise
         except Exception:
             pass  # orchestrator records AI status separately; don't fail the agent
 

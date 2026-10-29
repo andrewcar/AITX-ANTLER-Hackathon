@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "VulnSwarm (pipeline proof)",
+  "name": "VulnSwarm / Swarmageddon",
   "version": "0.1.0",
   "description": "Scan the current tab's site via the local VulnSwarm backend. Authorized targets only.",
   "permissions": ["activeTab", "storage"],

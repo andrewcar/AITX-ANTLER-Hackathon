@@ -16,19 +16,32 @@ each finding against it:
 Verdicts are honest: 'unverified' is a real outcome, not a failure. We never mark an
 AI claim 'confirmed' unless its evidence is grounded in what we actually observed.
 """
+import control
 import recon
 
 
-def verify_all(findings: list[dict], url: str, session=None) -> list[dict]:
-    """Re-observe the target once, then verify every finding against it."""
+def verify_all(findings: list[dict], url: str, session=None, on_verdict=None) -> list[dict]:
+    """Re-observe the target once, then verify every finding against it.
+
+    on_verdict, when passed, is called with each finding after its verdict is
+    written so a live stream can show them landing one by one. The blocking
+    /scan path leaves it unset.
+    """
+    def _emit(finding: dict):
+        if on_verdict:
+            on_verdict(finding)
+
     try:
         fresh = recon.scan(url, session)
+    except control.ScanStopped:
+        raise
     except Exception as e:
         # can't get a fresh observation -> nothing can be confirmed
         for f in findings:
             f["verified"] = False
             f["verdict"] = "unverified"
             f["verify_note"] = f"no fresh observation ({type(e).__name__})"
+            _emit(f)
         return findings
 
     fresh_headers = fresh.get("raw_headers", {})
@@ -37,6 +50,7 @@ def verify_all(findings: list[dict], url: str, session=None) -> list[dict]:
               + " ".join(fresh_cookies)).lower()
 
     for f in findings:
+        control.checkpoint()
         src = f.get("source")
         if src == "deterministic":
             v, verdict, note = _verify_deterministic(f, fresh, fresh_headers,
@@ -46,6 +60,7 @@ def verify_all(findings: list[dict], url: str, session=None) -> list[dict]:
         f["verified"] = v
         f["verdict"] = verdict
         f["verify_note"] = note
+        _emit(f)
     return findings
 
 
