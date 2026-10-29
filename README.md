@@ -129,7 +129,7 @@ Swarmageddon uses **no external datasets**. Its only inputs are the live HTTP re
 - SARIF / shareable HTML report export.
 - Scheduled re-scans with diffing to track a target over time.
 
-## Team ALINA
+## Team ALANI
 
 - Andrew Carvajal
 - Erwin **[LAST NAME — TODO]**
