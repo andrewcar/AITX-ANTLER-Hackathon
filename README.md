@@ -4,6 +4,36 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 
 **It detects. It does not exploit.** Probes are small, deterministic markers (a reflected token, a single quote, `;id`, a traversal to `/etc/passwd`) used only to confirm that a weakness exists. The planner refuses to inject into destructive or sensitive fields (password, token, CSRF, delete/update/create/logout controls).
 
+## Tech stack
+
+- **Backend:** Python 3, FastAPI + Uvicorn, Pydantic.
+- **HTTP probing:** Python standard-library `urllib` only (no third-party scraper); every request is paced and allowlist-checked.
+- **Concurrency:** `ThreadPoolExecutor` runs the specialist swarm in parallel over one shared `ScanContext`.
+- **Streaming:** Server-Sent Events push every phase, agent and finding to the dashboard live.
+- **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
+- **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
+- **Storage:** an append-only JSONL audit log. No database.
+- **Tests:** `pytest` (26 test functions).
+
+## Architecture
+
+```mermaid
+flowchart LR
+  UI["Live dashboard (SSE)"] -->|POST /scan/stream| API["FastAPI backend"]
+  API --> ORCH["Orchestrator — 6 barrier phases"]
+  ORCH --> AUTH["AUTH"] --> MAP["MAP: recon · crawl · fingerprint"] --> PLAN["PLAN"]
+  PLAN --> SWARM
+  subgraph SWARM["SWARM — parallel specialists (thread pool)"]
+    CH["config_headers"]
+    EP["exposed_paths"]
+    INJ["injection"]
+  end
+  SWARM --> VERIFY["VERIFY: re-check each finding"] --> REPORT["REPORT: ranked"]
+  REPORT --> UI
+  API -. enforces .-> GR["Allowlist → 403 · STOP kill switch · rate limit"]
+  ORCH --> AUDIT[("Append-only audit.jsonl")]
+```
+
 ## Pipeline
 
 `backend/orchestrator.py` runs six phases as barriers. Each phase finishes before the next starts.
@@ -78,6 +108,26 @@ The intended targets are intentionally vulnerable apps that **you host yourself*
 - dashboard on `:8090`
 
 Add your host to `ALLOWLIST` (default: `localhost`, `127.0.0.1`, `10.0.0.32`) and to `LAB_TARGETS` in `main.py`. Keep these apps off the public internet. Scan only systems you own or are explicitly authorized to test.
+
+## Data & sources
+
+Swarmageddon uses **no external datasets**. Its only inputs are the live HTTP responses of the single target you host and have consented to test; nothing is collected or trained on. Demo targets are the intentionally vulnerable **OWASP Juice Shop** and **DVWA** (upstream open-source projects you run locally via `docker-compose` — see **Demo targets**). The server-side allowlist guarantees no host outside your own lab is ever contacted.
+
+## Known limitations & next steps
+
+**Limitations today**
+- The crawl does not execute JavaScript, so SPA-only routes and DOM-rendered links can be missed.
+- Injection is capped at 20 work units per run to stay fast and polite.
+- A fixed specialist set: security headers / cookies / version banners, reachable sensitive paths, and reflected XSS + SQLi + command injection + LFI on one field at a time.
+- **Confirmation probes only** — it proves a weakness exists, it does not exploit, chain, or extract data.
+- Authenticated scanning currently recognizes the DVWA login flow only.
+
+**Next steps**
+- Headless-browser crawl for single-page apps.
+- More specialists: SSRF, IDOR, broken auth/session, CORS misconfig.
+- Verifier-grounded LLM triage across more finding types.
+- SARIF / shareable HTML report export.
+- Scheduled re-scans with diffing to track a target over time.
 
 ## Team ALINA
 
