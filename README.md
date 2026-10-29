@@ -131,5 +131,5 @@ Swarmageddon uses **no external datasets**. Its only inputs are the live HTTP re
 
 ## Team ALANI
 
-- Andrew Carvajal
-- Erwin **[LAST NAME — TODO]**
+- **Andrew Carvajal** — software developer
+- **Erwin Pawliczek** — chemical engineer
