@@ -30,8 +30,11 @@ services:
     image: nginx:alpine
     volumes:
       - ./dashboard:/usr/share/nginx/html:ro   # the multi-site "main page"
+      - ./dashboard-preview/preview.conf:/etc/nginx/conf.d/preview.conf:ro
     ports:
       - "8090:80"
+      - "8091:8091"   # Juice Shop preview (frame headers stripped)
+      - "8092:8092"   # DVWA preview
     restart: unless-stopped
 
   juice:
