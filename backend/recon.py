@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlencode, urljoin, urlparse
 
+import audit
 import control
 
 TARGET_MAP = {
@@ -74,6 +75,45 @@ def resolve(url: str) -> str:
         tail = url.split(p.netloc, 1)[-1] if p.netloc in url else ""
         return base + tail
     return url
+
+
+def _redirect_allowed(next_url: str) -> bool:
+    """True when a redirect hop stays in scope. Pure URL check — no network.
+
+    Allowed: a host on main.ALLOWLIST (same check as /scan), or an internal docker
+    base from TARGET_MAP (where allowlisted public targets are actually reached).
+    """
+    p = urlparse(next_url)
+    if p.scheme not in ("http", "https"):
+        return False
+    host = p.hostname or ""
+    import main  # lazy: main imports the orchestrator, which imports recon
+    try:
+        main.allowlisted_host(next_url)
+        return True
+    except main.ScopeError:
+        pass
+    port = str(p.port or (443 if p.scheme == "https" else 80))
+    for base in TARGET_MAP.values():
+        b = urlparse(base)
+        if host == b.hostname and port == str(b.port or (443 if b.scheme == "https" else 80)):
+            return True
+    return False
+
+
+def _audit_redirect_refused(from_url: str, to_url: str, status: int) -> None:
+    lease = control.current_lease()
+    audit.record(
+        "request",
+        run_id=getattr(lease, "run_id", ""),
+        target=getattr(lease, "target", ""),
+        actor=getattr(lease, "actor", ""),
+        agent=control.current_agent(),
+        action="REDIRECT_REFUSED",
+        url=str(to_url)[:500],
+        status=int(status),
+        detail=f"redirect from {str(from_url)[:200]} is off the allowlist; not followed",
+    )
 
 
 def looks_like_app_html(snippet: str) -> bool:
@@ -152,7 +192,12 @@ def _do(internal_url, session=None, method="GET", data=None, timeout=10,
     if follow and status in _REDIRECT_CODES and _depth < 5 and rhdrs is not None:
         loc = rhdrs.get("Location")
         if loc:
-            return _do(urljoin(internal_url, loc), session, "GET", None,
+            next_url = urljoin(internal_url, loc)
+            if not _redirect_allowed(next_url):
+                # Scope lock: never send a request to an off-allowlist host.
+                _audit_redirect_refused(internal_url, next_url, status)
+                return status, rhdrs, body
+            return _do(next_url, session, "GET", None,
                        timeout, read, follow, _depth + 1)
     return status, rhdrs, body
 

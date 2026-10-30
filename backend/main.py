@@ -78,14 +78,14 @@ USERS = {
 ALLOWLIST = {
     "localhost",
     "127.0.0.1",
-    "10.0.0.32",          # the tower's LAN IP — the targets are published here
-    # add Andrew's server IP here when we bring it in
+    # No LAN IPs: on shared/venue WiFi a LAN address can belong to someone else.
+    # Add a LAN host only on a private network you control.
 }
 
 # The hosted lab targets shown on the dashboard (the multi-site "main page").
 LAB_TARGETS = [
-    {"name": "DVWA", "stack": "PHP / LAMP", "url": "http://10.0.0.32:8081"},
-    {"name": "Juice Shop", "stack": "Node / SPA", "url": "http://10.0.0.32:3001"},
+    {"name": "DVWA", "stack": "PHP / LAMP", "url": "http://localhost:8081"},
+    {"name": "Juice Shop", "stack": "Node / SPA", "url": "http://localhost:3001"},
 ]
 
 # Default CORS: local dashboard (nginx :8090 / file:// → Origin null) and common lab hosts.
