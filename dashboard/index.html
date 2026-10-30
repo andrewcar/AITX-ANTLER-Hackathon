@@ -61,6 +61,7 @@
   button:focus-visible { outline:3px solid var(--accent2); outline-offset:2px; }
   button.ghost { background:var(--panel); border:1px solid var(--line2); color:var(--fg); }
   button:disabled { opacity:.45; cursor:default; }
+  .topbar button { white-space:nowrap; }
   button.proj-btn { display:inline-flex; align-items:center; gap:8px; }
   button.proj-btn kbd { font:700 11px var(--mono); border:1px solid var(--line2); border-radius:4px; padding:1px 5px; color:var(--muted); }
   button.proj-btn[aria-pressed="true"] { background:#16305e; border-color:var(--accent); }
@@ -506,6 +507,9 @@
   @keyframes freshRow { 0% { background:rgba(90,209,255,.25); } 100% { } }
   @keyframes hintFade { 0%,70% { opacity:1; } 100% { opacity:0; } }
 
+  @media (max-width:1700px) {
+    .brand .tag { display:none; }
+  }
   @media (max-width:1400px) {
     header.topbar { flex-wrap:wrap; }
     .topbar .right { flex-wrap:wrap; }
@@ -2086,7 +2090,7 @@ function renderResult(name, d, target) {
       <div class="stat muted">stack: ${esc(fp.stack)}/${esc(fp.lang)}</div>
       <div class="stat muted">surface: ${d.surface?.pages ?? 0}p · ${d.surface?.forms ?? 0}f · ${d.surface?.params ?? 0}q → ${d.units ?? 0} units</div>
       <div class="stat muted">auth: ${d.auth?.authenticated ? "yes" : "no"}</div>
-      <div class="stat muted">model: ${esc(d.model)}</div>
+      <div class="stat muted">triage: ${d.ai_available ? "AI · " + esc(d.model) : "rule-based (AI off)"}</div>
     </div>
     <table>
       <thead><tr><th>verdict</th><th>sev</th><th>layer</th><th>finding</th></tr></thead>
