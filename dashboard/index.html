@@ -466,7 +466,7 @@
   body.projector .live-pill { font-size:15px; }
   body.projector .target-url { font-size:15px; }
   @media (max-height:820px) {
-    body.projector .feed-wrap, body.projector .spotlight .sp-evi { display:none; }
+    body.projector .feed-wrap, body.projector .spotlight .sp-evi, body.projector .legend { display:none; }
     body.projector .hero { padding:6px 12px; }
     body.projector .theater-top { margin-bottom:6px; }
     body.projector .phase-rail { margin-bottom:6px; }
@@ -592,7 +592,11 @@
 </main>
 <div class="proj-hint" aria-hidden="true">PROJECTOR · press P or Esc to exit</div>
 <script>
-const DEFAULT_API = "http://127.0.0.1:8000";
+// Served by the tower (e.g. http://10.0.0.32:8090) → talk to the backend on that same host.
+// Opened as a local file or from localhost → the backend on this machine.
+const DEFAULT_API = /^https?:$/.test(location.protocol) && location.hostname
+  ? location.protocol + "//" + location.hostname + ":8000"
+  : "http://127.0.0.1:8000";
 const PHASES = ["AUTH", "MAP", "PLAN", "SWARM", "VERIFY", "REPORT"];
 const PHASE_COPY = {
   AUTH: ["Authenticating", "Logging in when this lab target has a known recipe"],
