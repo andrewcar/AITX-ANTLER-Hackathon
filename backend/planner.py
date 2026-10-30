@@ -13,8 +13,12 @@ MAX_INJECTION_UNITS = 20
 SKIP_PARAMS = {"user_token", "login", "submit", "change", "delete", "update",
                "create", "logout", "seclev_submit", "csrf"}
 SKIP_PARAM_SUBSTR = ("password", "passwd", "pwd", "token", "csrf")
-# a form is state-changing/destructive if it smells like one of these
-DESTRUCTIVE_FORM = ("logout", "delete", "csrf")
+# a form is state-changing/destructive if its action smells like one of these
+DESTRUCTIVE_FORM = ("logout", "delete", "csrf", "reset", "setup")
+# ...or if any of its inputs is a destructive control. Probing ANY field of a form also
+# submits its other inputs, so one such control (e.g. DVWA's create_db "Create / Reset
+# Database" button on setup.php) makes the whole form unsafe.
+DESTRUCTIVE_INPUT = ("delete", "reset", "drop", "truncate", "create_db", "logout")
 
 
 def _safe_param(name: str) -> bool:
@@ -31,6 +35,8 @@ def _safe_form(form: dict) -> bool:
     if "password" in inputs_low and ("conf" in inputs_low or "new" in inputs_low):
         return False
     if any(s in action_low for s in DESTRUCTIVE_FORM):
+        return False
+    if any(s in inputs_low for s in DESTRUCTIVE_INPUT):
         return False
     return True
 
