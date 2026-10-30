@@ -19,6 +19,9 @@ services:
       - "8000:8000"          # published on all tower interfaces -> reachable over LAN
     environment:
       - VULNSWARM_SESSION_SECRET=change-me-in-real-use
+      # Browsers on the LAN open the dashboard at http://10.0.0.32:8090, so that origin must be
+      # allowed or sign-in fails with "Cannot reach backend". The rest is main.py's default list.
+      - VULNSWARM_CORS_ORIGINS=http://10.0.0.32:8090,http://localhost:8090,http://127.0.0.1:8090,http://localhost:8000,http://127.0.0.1:8000,null
     env_file:
       - ./backend/.env       # holds FEATHERLESS_API_KEY and VULNSWARM_MODEL (gitignored)
     restart: unless-stopped

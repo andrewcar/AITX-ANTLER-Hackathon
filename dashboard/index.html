@@ -61,6 +61,7 @@
   button:focus-visible { outline:3px solid var(--accent2); outline-offset:2px; }
   button.ghost { background:var(--panel); border:1px solid var(--line2); color:var(--fg); }
   button:disabled { opacity:.45; cursor:default; }
+  .topbar button { white-space:nowrap; }
   button.proj-btn { display:inline-flex; align-items:center; gap:8px; }
   button.proj-btn kbd { font:700 11px var(--mono); border:1px solid var(--line2); border-radius:4px; padding:1px 5px; color:var(--muted); }
   button.proj-btn[aria-pressed="true"] { background:#16305e; border-color:var(--accent); }
@@ -466,7 +467,7 @@
   body.projector .live-pill { font-size:15px; }
   body.projector .target-url { font-size:15px; }
   @media (max-height:820px) {
-    body.projector .feed-wrap, body.projector .spotlight .sp-evi { display:none; }
+    body.projector .feed-wrap, body.projector .spotlight .sp-evi, body.projector .legend { display:none; }
     body.projector .hero { padding:6px 12px; }
     body.projector .theater-top { margin-bottom:6px; }
     body.projector .phase-rail { margin-bottom:6px; }
@@ -506,6 +507,9 @@
   @keyframes freshRow { 0% { background:rgba(90,209,255,.25); } 100% { } }
   @keyframes hintFade { 0%,70% { opacity:1; } 100% { opacity:0; } }
 
+  @media (max-width:1700px) {
+    .brand .tag { display:none; }
+  }
   @media (max-width:1400px) {
     header.topbar { flex-wrap:wrap; }
     .topbar .right { flex-wrap:wrap; }
@@ -592,7 +596,11 @@
 </main>
 <div class="proj-hint" aria-hidden="true">PROJECTOR · press P or Esc to exit</div>
 <script>
-const DEFAULT_API = "http://127.0.0.1:8000";
+// Served by the tower (e.g. http://10.0.0.32:8090) → talk to the backend on that same host.
+// Opened as a local file or from localhost → the backend on this machine.
+const DEFAULT_API = /^https?:$/.test(location.protocol) && location.hostname
+  ? location.protocol + "//" + location.hostname + ":8000"
+  : "http://127.0.0.1:8000";
 const PHASES = ["AUTH", "MAP", "PLAN", "SWARM", "VERIFY", "REPORT"];
 const PHASE_COPY = {
   AUTH: ["Authenticating", "Logging in when this lab target has a known recipe"],
@@ -2082,7 +2090,7 @@ function renderResult(name, d, target) {
       <div class="stat muted">stack: ${esc(fp.stack)}/${esc(fp.lang)}</div>
       <div class="stat muted">surface: ${d.surface?.pages ?? 0}p · ${d.surface?.forms ?? 0}f · ${d.surface?.params ?? 0}q → ${d.units ?? 0} units</div>
       <div class="stat muted">auth: ${d.auth?.authenticated ? "yes" : "no"}</div>
-      <div class="stat muted">model: ${esc(d.model)}</div>
+      <div class="stat muted">triage: ${d.ai_available ? "AI · " + esc(d.model) : "rule-based (AI off)"}</div>
     </div>
     <table>
       <thead><tr><th>verdict</th><th>sev</th><th>layer</th><th>finding</th></tr></thead>
