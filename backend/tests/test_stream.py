@@ -84,6 +84,7 @@ def _install_pipeline(monkeypatch, state):
         },
     }))
     monkeypatch.setitem(orchestrator.SPECIALISTS, "exposed_paths", specialist(None))
+    monkeypatch.setitem(orchestrator.SPECIALISTS, "php_runtime", specialist(None))
     monkeypatch.setitem(orchestrator.SPECIALISTS, "injection", specialist({
         "layer": "injection",
         "severity": "high",
@@ -140,7 +141,7 @@ def test_run_scan_emits_live_events_and_keeps_blocking_shape(monkeypatch):
     assert set(result) == RESULT_KEYS
     assert "status" not in result
     assert events[0]["type"] == "scan_started"
-    assert events[0]["agents"] == ["config_headers", "exposed_paths", "injection"]
+    assert events[0]["agents"] == ["config_headers", "exposed_paths", "injection", "php_runtime"]
     assert events[-1]["type"] == "scan_complete"
     assert events[-1]["status"] == "complete"
     assert events[-1]["run_id"] == result["run_id"]
@@ -155,7 +156,7 @@ def test_run_scan_emits_live_events_and_keeps_blocking_shape(monkeypatch):
 
     started_units = [e for e in events if e["type"] == "agent" and e["status"] == "started"]
     finished_units = [e for e in events if e["type"] == "agent" and e["status"] == "finished"]
-    assert len(started_units) == len(finished_units) == result["units"] == 3
+    assert len(started_units) == len(finished_units) == result["units"] == 4  # fake target fingerprints as PHP -> php_runtime unit
     assert state["max"] >= 2
 
     by_unit = {}

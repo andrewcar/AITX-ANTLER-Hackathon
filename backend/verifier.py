@@ -152,6 +152,22 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
             return True, "confirmed", f"server banner still discloses version: {server!r}"
         return False, "rejected", "server banner no longer discloses a version"
 
+    if t in ("php2shell_version", "php_upload_progress"):
+        from agents import php_runtime
+        body = ""
+        if t == "php_upload_progress" or chk.get("where") == "phpinfo":
+            r = recon.get(url.rstrip("/") + "/phpinfo.php", session, max_bytes=120_000)
+            body = r.get("body", "") if r["status"] == 200 else ""
+        if t == "php_upload_progress":
+            if php_runtime.upload_progress_on(body):
+                return True, "confirmed", "phpinfo still shows session.upload_progress.enabled = On"
+            return False, "rejected", "upload progress no longer shown as enabled"
+        ver = (php_runtime.parse_version(headers.get("x-powered-by", ""))
+               if chk.get("where") == "header" else php_runtime.parse_version(body, phpinfo=True))
+        if ver and php_runtime.classify(ver)[0]:
+            return True, "confirmed", f"re-fetch still reports affected PHP {'.'.join(map(str, ver))}"
+        return False, "rejected", "re-fetch no longer reports an affected PHP version"
+
     return False, "unverified", "no machine check for this finding"
 
 
