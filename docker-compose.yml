@@ -57,4 +57,11 @@ services:
       - MYSQL_DATABASE=dvwa
       - MYSQL_USER=dvwa
       - MYSQL_PASSWORD=p@ssw0rd  # matches DVWA's default config.inc.php
+    volumes:
+      # Keep DVWA's database across `docker compose down` / up, so its one-time
+      # "Create / Reset Database" step is not needed again. `down -v` wipes it.
+      - dvwa-db:/var/lib/mysql
     restart: unless-stopped
+
+volumes:
+  dvwa-db:
