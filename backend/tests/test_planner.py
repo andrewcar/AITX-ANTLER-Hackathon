@@ -14,6 +14,13 @@ def test_dvwa_reset_database_form_is_never_probed():
     assert _injected([setup]) == []
 
 
+def test_dvwa_guestbook_with_clear_button_is_never_probed():
+    # DVWA's stored-XSS guestbook: every probe also posts btnClear, which runs TRUNCATE guestbook.
+    guestbook = {"action": "http://t/vulnerabilities/xss_s/", "method": "post",
+                 "inputs": ["txtName", "mtxMessage", "btnSign", "btnClear"]}
+    assert _injected([guestbook]) == []
+
+
 def test_form_with_a_destructive_control_is_skipped_whole():
     form = {"action": "http://t/admin/", "method": "post", "inputs": ["name", "drop_table"]}
     assert _injected([form]) == []
