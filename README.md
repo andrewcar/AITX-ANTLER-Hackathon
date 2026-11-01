@@ -2,18 +2,19 @@
 
 A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability scanner. A swarm of specialist agents maps a target you own, probes it in parallel, re-verifies every finding against a fresh observation, and streams a ranked report to a live dashboard.
 
-**It detects. It does not exploit.** Probes are small, deterministic markers (a reflected token, a single quote, `;id`, a traversal to `/etc/passwd`) used only to confirm that a weakness exists. The planner refuses to inject into destructive or sensitive fields (password, token, CSRF, delete/update/create/logout controls), and skips a whole form when it carries a destructive control (reset, clear, drop, delete, …), because probing any field also submits the form's other buttons.
+**It detects. It does not exploit.** Probes are small, deterministic markers (a reflected token, a single quote, `;id`, a traversal to `/etc/passwd`) used only to confirm that a weakness exists. A probe sends only the field under test plus one benign submit button, never the form's other inputs. The planner also refuses to inject into destructive or sensitive fields (password, token, CSRF, delete/update/create/logout controls) and skips a whole form that carries a destructive control (reset, clear, drop, delete, …).
 
 ## Tech stack
 
 - **Backend:** Python 3, FastAPI + Uvicorn, Pydantic.
 - **HTTP probing:** Python standard-library `urllib` only (no third-party scraper); every request is paced and allowlist-checked.
+- **Headless crawl:** Playwright + Chromium for single-page apps. The browser never reaches the network itself: every request it makes is served through the same guarded `urllib` layer.
 - **Concurrency:** `ThreadPoolExecutor` runs the specialist swarm in parallel over one shared `ScanContext`.
 - **Streaming:** Server-Sent Events push every phase, agent and finding to the dashboard live.
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (33 test functions).
+- **Tests:** `pytest` (45 test functions; the 5 headless-crawl tests skip when Chromium isn't installed).
 
 ## Architecture
 
@@ -41,7 +42,7 @@ flowchart LR
 | Phase  | Module(s) | What happens |
 |--------|-----------|--------------|
 | AUTH   | `auth.py`, `recon.py` | One shared session. Logs in if the target is recognized (currently DVWA, lab creds from env). |
-| MAP    | `recon.py`, `crawler.py`, `fingerprint.py` | Root recon, bounded same-host BFS crawl (pages, forms, params, no JS execution), evidence-based stack fingerprint. |
+| MAP    | `recon.py`, `crawler.py`, `browser_crawl.py`, `fingerprint.py` | Root recon, bounded same-host BFS crawl (pages, forms, params), evidence-based stack fingerprint. When the HTML crawl finds nothing to probe (a single-page app such as Juice Shop), a headless-Chromium crawl runs the app's JavaScript and records its routes and the query parameters of its own API calls. |
 | PLAN   | `planner.py` | Pairs discovered sections with relevant specialists to produce work units (stack-aware, capped at 20 injection units). |
 | SWARM  | `agents/config_headers.py`, `agents/exposed_paths.py`, `agents/injection.py` | Units run in parallel (thread pool, `MAX_WORKERS = 8`), all writing to one shared `ScanContext`. |
 | VERIFY | `verifier.py` | Re-checks each finding on a fresh request: `confirmed`, `rejected`, or `unverified` (left for a human). |
@@ -60,6 +61,7 @@ Specialists:
   - `VULNSWARM_MAX_CONCURRENT_SCANS`: default `2`. Additional scans get HTTP 429.
   - `VULNSWARM_REQUEST_INTERVAL_MS`: default `50`. Minimum gap between requests within one scan.
   - `VULNSWARM_GLOBAL_REQUEST_INTERVAL_MS`: default `25`. Minimum gap between any two requests.
+- **Headless crawl** (`browser_crawl.py`): same origin only, with every request (and each redirect hop) re-checked against the allowlist; read-only (GET/HEAD; never submits); refusals audited as `BROWSER_REFUSED`; capped at 50 routes and 60 s; honors STOP and pacing because every request goes through `recon._do`. Anything that could bypass interception is blocked (service workers off, traffic pointed at a dead proxy, DNS disabled). `VULNSWARM_BROWSER_CRAWL`: `auto` (default; only when the HTML crawl finds nothing to probe), `on`, or `off`.
 - **Append-only audit log** (`audit.py`): JSONL, one record per line, never rewritten. It records scan start, stop, reject, and outcome events, plus each outbound request (method, URL, status). Request bodies are not stored. Default path is `backend/var/audit.jsonl`; override it with `VULNSWARM_AUDIT_LOG`. `GET /audit` returns the newest records and the live limits.
 
 ## Triage: rule-based by default
@@ -90,7 +92,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (33 test functions in `backend/tests/`):
+Tests (45 test functions in `backend/tests/`; the headless-crawl tests need Playwright's Chromium and skip without it):
 
 ```bash
 cd backend && python -m pytest tests/ -q
@@ -118,14 +120,13 @@ Swarmageddon uses **no external datasets**. Its only inputs are the live HTTP re
 ## Known limitations & next steps
 
 **Limitations today**
-- The crawl does not execute JavaScript, so SPA-only routes and DOM-rendered links can be missed.
+- The headless crawl reads SPA routes and the app's GET API calls, but does not fill in SPA forms or probe JSON request bodies (it is read-only by design).
 - Injection is capped at 20 work units per run to stay fast and polite.
 - A fixed specialist set: security headers / cookies / version banners, reachable sensitive paths, and reflected XSS + SQLi + command injection + LFI on one field at a time.
 - **Confirmation probes only** — it proves a weakness exists, it does not exploit, chain, or extract data.
 - Authenticated scanning currently recognizes the DVWA login flow only.
 
 **Next steps**
-- Headless-browser crawl for single-page apps.
 - More specialists: SSRF, IDOR, broken auth/session, CORS misconfig.
 - Verifier-grounded LLM triage across more finding types.
 - SARIF / shareable HTML report export.
