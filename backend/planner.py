@@ -17,8 +17,10 @@ SKIP_PARAM_SUBSTR = ("password", "passwd", "pwd", "token", "csrf")
 DESTRUCTIVE_FORM = ("logout", "delete", "csrf", "reset", "setup")
 # ...or if any of its inputs is a destructive control. Probing ANY field of a form also
 # submits its other inputs, so one such control (e.g. DVWA's create_db "Create / Reset
-# Database" button on setup.php) makes the whole form unsafe.
-DESTRUCTIVE_INPUT = ("delete", "reset", "drop", "truncate", "create_db", "logout")
+# Database" button on setup.php, or btnClear "Clear Guestbook" on the stored-XSS page,
+# which runs TRUNCATE) makes the whole form unsafe.
+DESTRUCTIVE_INPUT = ("delete", "reset", "drop", "truncate", "create_db", "logout",
+                     "clear", "remove", "erase", "wipe", "purge")
 
 
 def _safe_param(name: str) -> bool:

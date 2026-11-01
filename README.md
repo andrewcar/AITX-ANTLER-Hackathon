@@ -2,7 +2,7 @@
 
 A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability scanner. A swarm of specialist agents maps a target you own, probes it in parallel, re-verifies every finding against a fresh observation, and streams a ranked report to a live dashboard.
 
-**It detects. It does not exploit.** Probes are small, deterministic markers (a reflected token, a single quote, `;id`, a traversal to `/etc/passwd`) used only to confirm that a weakness exists. The planner refuses to inject into destructive or sensitive fields (password, token, CSRF, delete/update/create/logout controls).
+**It detects. It does not exploit.** Probes are small, deterministic markers (a reflected token, a single quote, `;id`, a traversal to `/etc/passwd`) used only to confirm that a weakness exists. The planner refuses to inject into destructive or sensitive fields (password, token, CSRF, delete/update/create/logout controls), and skips a whole form when it carries a destructive control (reset, clear, drop, delete, …), because probing any field also submits the form's other buttons.
 
 ## Tech stack
 
@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (26 test functions).
+- **Tests:** `pytest` (33 test functions).
 
 ## Architecture
 
@@ -90,7 +90,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (26 test functions in `backend/tests/`):
+Tests (33 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q
@@ -103,11 +103,13 @@ The demo users and the dev token secret are for localhost only. Set `VULNSWARM_S
 The intended targets are intentionally vulnerable apps that **you host yourself**: **OWASP Juice Shop** and **DVWA**. Both require **Docker** locally. `docker-compose.yml` runs them alongside the backend and dashboard:
 
 - Juice Shop on `:3001`
-- DVWA on `:8081`
+- DVWA on `:8081` (its database is kept in the `dvwa-db` volume; create it once at `/setup.php`)
 - backend on `:8000`
 - dashboard on `:8090`
 
-Add your host to `ALLOWLIST` (default: `localhost`, `127.0.0.1`, `10.0.0.32`) and to `LAB_TARGETS` in `main.py`. Keep these apps off the public internet. Scan only systems you own or are explicitly authorized to test.
+The `ALLOWLIST` in `main.py` is `localhost` and `127.0.0.1` only. LAN addresses are deliberately left out: on shared Wi-Fi a LAN IP can belong to someone else's device. Because the backend runs next to the targets, scan them as `http://localhost:8081` (DVWA) and `http://localhost:3001` (Juice Shop); those are the dashboard's `LAB_TARGETS` cards, and the backend routes them to the containers. Browsers on the LAN still open the dashboard and labs at the tower's address (e.g. `http://10.0.0.32:8090`), and the extension sends a tab on the backend's own machine as `localhost`. Only add a LAN host to `ALLOWLIST` on a private network you control. Keep these apps off the public internet. Scan only systems you own or are explicitly authorized to test.
+
+For the live projector demo, follow [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md). Teammate laptop setup: [SETUP.md](SETUP.md).
 
 ## Data & sources
 

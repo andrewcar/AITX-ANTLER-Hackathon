@@ -58,8 +58,9 @@ Now, two clicks:
 
         $EXT_DIR
 
-Then pin the VulnSwarm icon, open it on a target tab
-(e.g. $BACKEND_URL/health or http://10.0.0.32:3001),
+Then pin the VulnSwarm icon, open it on a lab tab
+(Juice Shop http://10.0.0.32:3001 or DVWA http://10.0.0.32:8081),
 confirm the Backend URL says $BACKEND_URL, sign in (erwin@local / demo),
-and hit 'Scan this tab'.
+and hit 'Scan this tab'. The popup scans the tab as http://localhost:<port>,
+because the backend only allows localhost and runs on the tower.
 EOF

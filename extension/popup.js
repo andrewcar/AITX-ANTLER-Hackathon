@@ -32,6 +32,36 @@ async function currentTabUrl() {
   return tab?.url || "";
 }
 
+// What to send for the current tab:
+// - The swarm scans a whole site from its root (it logs in, crawls and probes paths from
+//   there), so send the tab's site, not the page (DVWA tabs sit on /login.php; Juice Shop
+//   URLs end in /#/, which would swallow every probe path).
+// - The backend only allows localhost. A lab tab opened on the backend's own machine
+//   (e.g. http://10.0.0.32:3001 when the backend is http://10.0.0.32:8000) is that
+//   machine's localhost from the backend's point of view, so send it as localhost.
+//   Any other host is sent unchanged, and the backend's allowlist refuses it.
+function scanTargetFor(tabUrl, api) {
+  try {
+    const tab = new URL(tabUrl);
+    if (!/^https?:$/.test(tab.protocol)) return { url: tabUrl, mappedFrom: null };
+    const backend = new URL(api);
+    const local = ["localhost", "127.0.0.1"];
+    let mappedFrom = null;
+    if (tab.hostname === backend.hostname && !local.includes(tab.hostname)) {
+      tab.hostname = "localhost";
+      mappedFrom = tabUrl;
+    }
+    return { url: tab.origin, mappedFrom };
+  } catch {
+    return { url: tabUrl, mappedFrom: null };
+  }
+}
+
+async function showTarget() {
+  const { url, mappedFrom } = scanTargetFor(await currentTabUrl(), await getApi());
+  $("target").textContent = mappedFrom ? `${url}  (this tab's site, as the backend sees it)` : url;
+}
+
 function showScanView(email) {
   $("loginView").classList.add("hidden");
   $("scanView").classList.remove("hidden");
@@ -69,15 +99,15 @@ async function login() {
 async function enterScanView() {
   const { email } = await chrome.storage.local.get("email");
   showScanView(email || "?");
-  $("target").textContent = await currentTabUrl();
+  await showTarget();
 }
 
 async function scan() {
   const token = await getToken();
-  const url = await currentTabUrl();
+  const api = await getApi();
+  const { url } = scanTargetFor(await currentTabUrl(), api);
   $("results").innerHTML = '<div class="muted">Scanning…</div>';
   try {
-    const api = await getApi();
     const res = await fetch(`${api}/scan`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -118,7 +148,7 @@ function render(data) {
     `<span class="muted">✗ ${s.rejected ?? 0} rejected</span>` +
     (data.fingerprint ? `<div class="muted">stack: ${esc(data.fingerprint.stack)}/${esc(data.fingerprint.lang)}</div>` : "") +
     (data.surface ? `<div class="muted">surface: ${data.surface.pages} pages · ${data.surface.forms} forms · ${data.surface.params} params → ${data.units} work units</div>` : "") +
-    `<div class="muted">specialists: ${(data.specialists_run || data.agents_run || []).join(", ")} · model: ${esc(data.model || "?")}</div>` +
+    `<div class="muted">specialists: ${(data.specialists_run || data.agents_run || []).join(", ")} · triage: ${data.ai_available ? "AI · " + esc(data.model || "?") : "rule-based (AI off)"}</div>` +
     `</div>`;
 
   const items = findings.length
