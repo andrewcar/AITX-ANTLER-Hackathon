@@ -152,6 +152,18 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
             return True, "confirmed", f"server banner still discloses version: {server!r}"
         return False, "rejected", "server banner no longer discloses a version"
 
+    if t in ("gitlab_version", "gitlab_detected"):
+        from agents import gitlab_version
+        fp = gitlab_version.fingerprint(url.rstrip("/"), session)
+        if t == "gitlab_detected":
+            if fp["gitlab"]:
+                return True, "confirmed", "GitLab markers still served on re-fetch"
+            return False, "rejected", "GitLab markers no longer served"
+        ver = fp["version"]
+        if fp["gitlab"] and ver and gitlab_version.classify(ver)[0] != "patched":
+            return True, "confirmed", f"re-fetch still reports GitLab {'.'.join(map(str, ver))}"
+        return False, "rejected", "re-fetch no longer reports an affected GitLab version"
+
     return False, "unverified", "no machine check for this finding"
 
 

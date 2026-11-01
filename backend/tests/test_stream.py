@@ -84,6 +84,7 @@ def _install_pipeline(monkeypatch, state):
         },
     }))
     monkeypatch.setitem(orchestrator.SPECIALISTS, "exposed_paths", specialist(None))
+    monkeypatch.setitem(orchestrator.SPECIALISTS, "gitlab_version", specialist(None))
     monkeypatch.setitem(orchestrator.SPECIALISTS, "injection", specialist({
         "layer": "injection",
         "severity": "high",
@@ -140,7 +141,7 @@ def test_run_scan_emits_live_events_and_keeps_blocking_shape(monkeypatch):
     assert set(result) == RESULT_KEYS
     assert "status" not in result
     assert events[0]["type"] == "scan_started"
-    assert events[0]["agents"] == ["config_headers", "exposed_paths", "injection"]
+    assert events[0]["agents"] == ["config_headers", "exposed_paths", "injection", "gitlab_version"]
     assert events[-1]["type"] == "scan_complete"
     assert events[-1]["status"] == "complete"
     assert events[-1]["run_id"] == result["run_id"]

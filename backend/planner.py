@@ -48,6 +48,9 @@ def plan(ctx) -> list[dict]:
     # site-wide specialists: one unit each, pointed at the root
     units.append({"specialist": "config_headers", "section": {"kind": "site", "url": ctx.url}})
     units.append({"specialist": "exposed_paths", "section": {"kind": "site", "url": ctx.url}})
+    # GitLab targets: version-fingerprint CVE-2026-97229 check (anonymous GETs only)
+    if (getattr(ctx, "fingerprint", None) or {}).get("app") == "gitlab":
+        units.append({"specialist": "gitlab_version", "section": {"kind": "site", "url": ctx.url}})
 
     # injection specialist: one unit per SAFE discovered input/param (bounded).
     # destructive forms and sensitive/control params are skipped entirely.
