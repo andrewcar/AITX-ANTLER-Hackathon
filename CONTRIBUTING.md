@@ -1,16 +1,13 @@
 # Contributing / laptop setup
 
-For team contributors. The repo is **private**, so each laptop authenticates to
-GitHub once, then clone + run the setup helper.
+For team contributors. The repo is **public** at
+[andrewcar/AITX-ANTLER-Hackathon](https://github.com/andrewcar/AITX-ANTLER-Hackathon),
+so cloning needs no login.
 
 ## First-time install (one copy/paste block)
 
 ```bash
-# 1. log in to GitHub once (opens a browser / device code)
-gh auth login
-
-# 2. clone and set up
-gh repo clone ErwinPawliczek/AITX-ANTLER-Hackathon
+git clone https://github.com/andrewcar/AITX-ANTLER-Hackathon.git
 cd AITX-ANTLER-Hackathon
 ./setup.sh http://10.0.0.32:8000
 ```
@@ -22,10 +19,9 @@ exact folder to load. Then the two manual clicks browsers require:
 2. **Load unpacked** → select the printed `extension/` folder
 
 Pin the icon, open it on `http://10.0.0.32:3001`, sign in (`erwin@local` / `demo`),
-**Scan this tab**.
-
-> No `gh`? Install it (`sudo apt install gh` / `brew install gh`), or clone over HTTPS
-> and paste a GitHub personal-access-token when prompted.
+**Scan this tab**. The popup scans it as `http://localhost:3001`: the backend's allowlist is
+`localhost` / `127.0.0.1` only, and to the backend on the tower, the tower is `localhost`
+(details in [SETUP.md](SETUP.md)).
 
 ## Getting updates
 
@@ -52,6 +48,19 @@ dev-only and must never ship in a shared/published build. Not set up yet.
 ## Who runs what
 
 - **Tower (10.0.0.32)** runs the backend + target lab via `docker compose up -d`.
-- **Contributor laptops** run only the **extension**, pointed at the tower's backend.
+  DVWA's database is kept in the `dvwa-db` volume (one-time setup click; see
+  [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md)).
+- **Contributor laptops** run only the **extension** (or open the dashboard at
+  `http://10.0.0.32:8090`), pointed at the tower's backend.
   You do *not* need Docker or the backend locally unless you're developing the backend.
+
+## Making changes
+
+- Branch from `main` and open a pull request against `andrewcar/AITX-ANTLER-Hackathon`.
+  Andrew reviews and merges.
+- Keep it consent-first and non-destructive: scan only allowlisted hosts you own; the
+  tool detects, it never exploits. Call out any change to backend safety logic
+  (allowlist, STOP, rate limiting, audit log, planner guardrails) in the PR.
+- Run the tests before you push: `cd backend && python -m pytest tests/ -q`.
+- Never commit secrets. `backend/.env` is git-ignored; copy `backend/.env.example`.
 ```
