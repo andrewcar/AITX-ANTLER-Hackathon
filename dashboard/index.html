@@ -780,15 +780,17 @@ function watchFrame(frame) {
   if (mock) mock.classList.add("hidden");
 }
 
-async function loadPreview(url) {
-  paintMock(url, { title: hostOf(url) });
+// name: the target's card name ("DVWA"). The backend's preview of a localhost target is a
+// placeholder titled "localhost", so the card name wins whenever there is one.
+async function loadPreview(url, name) {
+  paintMock(url, { title: name || hostOf(url) });
   let info = null;
   try {
     const res = await api("/preview?url=" + encodeURIComponent(url));
     if (res.ok) info = await res.json();
   } catch {}
   if (!info || !$("siteMock")) return;
-  paintMock(url, info);
+  paintMock(url, name ? { ...info, title: name } : info);
   const frame = $("siteFrame");
   if (!frame || info.mode !== "iframe" || !info.allowlisted) {
     if (frame) {
@@ -1750,7 +1752,12 @@ function apply(sess, ev) {
 function phaseDetail(phase, detail) {
   if (!detail) return "";
   if (phase === "AUTH") return detail.note || (detail.authenticated ? "Authenticated" : "Anonymous");
-  if (phase === "MAP") return `${detail.pages || 0} pages · ${detail.forms || 0} forms · ${detail.params || 0} params`;
+  if (phase === "MAP") {
+    let s = `${detail.pages || 0} pages · ${detail.forms || 0} forms · ${detail.params || 0} params`;
+    if (detail.engine === "static+browser") s += ` · headless crawl: ${detail.browser_pages || 0} routes, ${detail.api_calls || 0} API calls`;
+    else if (detail.browser_note) s += ` · ${detail.browser_note}`;
+    return s;
+  }
   if (phase === "PLAN") return `${detail.units || 0} work units`;
   if (phase === "SWARM") return `${detail.findings || 0} raw findings`;
   if (phase === "VERIFY") {
@@ -1937,7 +1944,12 @@ function paintActivity(records) {
     const status = row.status;
     st.textContent = status == null || status === "" ? "" : String(status);
     const n = Number(status);
-    if (row.kind === "request") {
+    if (row.kind === "request" && /_REFUSED$/.test(row.action || "")) {
+      // The scope lock at work: a request the swarm refused to send (off-origin, off-allowlist, or not read-only).
+      st.textContent = "refused";
+      st.className = "st st-bad";
+      item.classList.add("k-bad");
+    } else if (row.kind === "request") {
       st.className = "st " + (n >= 200 && n < 400 ? "st-ok" : "st-bad");
     } else if (status === "rejected" || status === "error") { st.className = "st st-bad"; item.classList.add("k-bad"); }
     else if (status === "cancelled" || status === "stop_requested") { st.className = "st st-warn"; item.classList.add("k-stop"); }
@@ -1981,7 +1993,7 @@ async function scan(url, name) {
   syncProjectorButtons();
   paintRail(false);
   paintMock(url, { title: name || hostOf(url) });
-  loadPreview(url);
+  loadPreview(url, name);
   const stage = $("swarmStage");
   const canvas = $("swarmCanvas");
   if (stage && canvas) {
@@ -2170,7 +2182,10 @@ function onScanForm(e) {
   if (!raw) return;
   const url = /^https?:\/\//i.test(raw) ? raw : "http://" + raw;
   $("targetUrl").value = url;
-  scan(url, hostOf(url));
+  // A typed URL that is one of the lab cards gets the card's name on stage.
+  const same = (a, b) => a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
+  const card = (window._targets || []).find(t => same(t.url, url));
+  scan(url, card ? card.name : hostOf(url));
 }
 
 $("loginBtn").addEventListener("click", login);
