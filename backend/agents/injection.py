@@ -33,10 +33,14 @@ def _mark() -> str:
 
 
 def _data(section: dict, param: str, value: str) -> dict:
-    """Target param gets the payload; sibling inputs get filler so the form submits."""
+    """Only the probed field, plus at most ONE benign submit control chosen by the
+    planner. The form's other inputs are never sent: any of them could be a destructive
+    control (a reset, clear or delete button), and sending them all is how a probe once
+    pressed DVWA's 'Clear Guestbook'."""
     d = {param: value}
-    for name in section.get("inputs", []):
-        d.setdefault(name, "1")
+    sub = section.get("submit")
+    if sub and sub.get("name") and sub["name"] != param:
+        d[sub["name"]] = sub.get("value") or "1"
     return d
 
 
@@ -58,7 +62,8 @@ def run(section: dict, ctx) -> list[dict]:
     url, param = section["url"], section["param"]
     method = section.get("method", "get")
     inputs = section.get("inputs", [])
-    base_check = {"url": url, "param": param, "method": method, "inputs": inputs}
+    base_check = {"url": url, "param": param, "method": method, "inputs": inputs,
+                  "submit": section.get("submit")}
     out = []
 
     # --- reflected XSS ---

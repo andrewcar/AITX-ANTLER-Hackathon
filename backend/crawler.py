@@ -3,7 +3,9 @@ MAP phase — discover the site's attack surface (its 'sections').
 
 Bounded BFS from the target, same host only. Produces:
   - pages:  reachable URLs
-  - forms:  {page, action, method, inputs:[names]}      <- sections for injection/auth
+  - forms:  {page, action, method, inputs:[names], submits:[{name, value}]}
+            inputs = named input/textarea/select fields; submits = named submit controls
+            (input type=submit/image/button and <button>), so a probe can send ONE of them
   - params: {page, param, method}                         <- injectable inputs
 
 Stdlib only (html.parser). Kept small and safe: capped pages/depth, no JS execution.
@@ -32,11 +34,16 @@ class _HTMLScan(html.parser.HTMLParser):
         elif tag == "form":
             self._form = {"action": a.get("action", ""),
                           "method": (a.get("method") or "get").lower(),
-                          "inputs": []}
+                          "inputs": [], "submits": []}
         elif tag in ("input", "textarea", "select") and self._form is not None:
             name = a.get("name")
             if name:
                 self._form["inputs"].append(name)
+                if tag == "input" and (a.get("type") or "").lower() in ("submit", "image", "button"):
+                    self._form["submits"].append({"name": name, "value": a.get("value") or ""})
+        elif tag == "button" and self._form is not None and a.get("name"):
+            if (a.get("type") or "submit").lower() == "submit":
+                self._form["submits"].append({"name": a["name"], "value": a.get("value") or ""})
 
     def handle_endtag(self, tag):
         if tag == "form" and self._form is not None:
@@ -78,8 +85,8 @@ def map_site(url: str, session=None) -> dict:
         for f in parser.forms:
             action = urljoin(cur, f["action"] or cur)
             if urlparse(action).hostname == target_host:
-                forms.append({"page": cur, "action": action,
-                              "method": f["method"], "inputs": f["inputs"]})
+                forms.append({"page": cur, "action": action, "method": f["method"],
+                              "inputs": f["inputs"], "submits": f["submits"]})
 
         if depth < MAX_DEPTH:
             for href in parser.links:

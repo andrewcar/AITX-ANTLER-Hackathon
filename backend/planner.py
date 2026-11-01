@@ -30,8 +30,26 @@ def _safe_param(name: str) -> bool:
     return not any(s in low for s in SKIP_PARAM_SUBSTR)
 
 
+def _destructive(name: str) -> bool:
+    low = name.lower()
+    return any(s in low for s in DESTRUCTIVE_INPUT)
+
+
+def _benign_submit(form: dict, param: str) -> dict | None:
+    """The ONE submit control a probe may send with its field, or None.
+
+    Probes send only the probed field plus this control (agents/injection._data), never
+    the form's other inputs. The keyword deny-list in _safe_form is the second layer."""
+    for sub in form.get("submits", []):
+        name = sub.get("name") or ""
+        if name and name != param and not _destructive(name):
+            return {"name": name, "value": sub.get("value") or ""}
+    return None
+
+
 def _safe_form(form: dict) -> bool:
-    inputs_low = " ".join(form.get("inputs", [])).lower()
+    names = form.get("inputs", []) + [s.get("name", "") for s in form.get("submits", [])]
+    inputs_low = " ".join(names).lower()
     action_low = (form.get("action") or "").lower()
     # a password-change form has new+confirm fields — never submit it
     if "password" in inputs_low and ("conf" in inputs_low or "new" in inputs_low):
@@ -64,7 +82,7 @@ def plan(ctx) -> list[dict]:
                 continue
             units.append({"specialist": "injection", "section": {
                 "kind": "form_param", "url": f["action"], "method": f["method"],
-                "param": name, "inputs": f["inputs"],
+                "param": name, "inputs": f["inputs"], "submit": _benign_submit(f, name),
             }})
             inj += 1
     for p in surface.get("params", []):
