@@ -4,7 +4,8 @@ Orchestrator — the synchronized swarm.
 Phases run as barriers (each completes before the next):
 
   AUTH   one shared session; log in if we recognize the target
-  MAP    crawler discovers the site's sections
+  MAP    crawler discovers the site's sections (plus a headless-browser crawl for
+         single-page apps the HTML crawl can't see into; see browser_crawl.py)
   PLAN   planner pairs sections with relevant specialists -> work units
   SWARM  specialists run the units IN PARALLEL, all writing to one shared context
   VERIFY verifier re-confirms every finding against a fresh observation
@@ -20,12 +21,15 @@ Breadth = register a specialist in SPECIALISTS and have the planner emit units f
 Scale = replace the thread pool / in-process context with a Redis queue + worker
 processes across machines; the phase logic is unchanged.
 """
+import logging
+import os
 import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 import auth
+import browser_crawl
 import control
 import crawler
 import fingerprint
@@ -44,6 +48,48 @@ SPECIALISTS = {
 }
 
 MAX_WORKERS = 8  # parallel specialists in the SWARM phase
+
+log = logging.getLogger("vulnswarm")
+
+
+def _browser_mode() -> str:
+    """VULNSWARM_BROWSER_CRAWL: auto (default) | on | off."""
+    mode = (os.environ.get("VULNSWARM_BROWSER_CRAWL") or "auto").strip().lower()
+    return mode if mode in ("auto", "on", "off") else "auto"
+
+
+def _map_surface(url: str, session) -> tuple[dict, dict]:
+    """Static HTML crawl, then a headless-browser crawl when the static one found
+    nothing to probe (an SPA shell) or when forced on. Returns (surface, crawl_info)."""
+    surface = crawler.map_site(url, session)
+    info = {"engine": "static"}
+    mode = _browser_mode()
+    nothing_to_probe = not surface.get("forms") and not surface.get("params")
+    if mode == "off" or (mode == "auto" and not nothing_to_probe):
+        return surface, info
+    if not browser_crawl.available():
+        info["browser_note"] = "headless crawl unavailable (Playwright not installed)"
+        return surface, info
+    try:
+        with control.agent("browser"):
+            extra = browser_crawl.map_site(url, session)
+    except control.ScanStopped:
+        raise
+    except Exception as e:  # a broken browser must not fail the scan
+        log.warning("headless crawl failed: %s", e)
+        info["browser_note"] = f"headless crawl failed: {type(e).__name__}"
+        return surface, info
+    have_pages = {p["url"] for p in surface.get("pages", [])}
+    have_params = {(p["page"], p["param"]) for p in surface.get("params", [])}
+    merged = {
+        "pages": surface.get("pages", []) + [p for p in extra["pages"] if p["url"] not in have_pages],
+        "forms": surface.get("forms", []) + extra["forms"],
+        "params": surface.get("params", []) + [p for p in extra["params"]
+                                               if (p["page"], p["param"]) not in have_params],
+    }
+    info = {"engine": "static+browser", "browser_pages": len(extra["pages"]),
+            "api_calls": extra["api_calls"], "refused": extra["refused"]}
+    return merged, info
 
 PHASES = ("AUTH", "MAP", "PLAN", "SWARM", "VERIFY", "REPORT")
 
@@ -118,7 +164,7 @@ def run_scan(url: str, on_event=None, should_stop=None, run_id: str | None = Non
         with control.agent("crawler"):
             root = recon.scan(url, session)
             ctx = ScanContext(url=url, recon_root=root, session=session, auth=auth_result, run_id=run_id)
-            ctx.surface = crawler.map_site(url, session)
+            ctx.surface, crawl_info = _map_surface(url, session)
         ctx.fingerprint = fingerprint.detect(root, ctx.surface)
         surface_counts = {
             "pages": len(ctx.surface.get("pages", [])),
@@ -131,6 +177,7 @@ def run_scan(url: str, on_event=None, should_stop=None, run_id: str | None = Non
             "server": root.get("server") or "",
             "stack": ctx.fingerprint.get("stack") or "unknown",
             "lang": ctx.fingerprint.get("lang") or "unknown",
+            **crawl_info,
         })
         if stopped():
             return cancelled()

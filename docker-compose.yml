@@ -15,6 +15,7 @@
 services:
   backend:
     build: ./backend
+    init: true               # reap the headless crawl's exited Chromium helpers (no zombies)
     ports:
       - "8000:8000"          # published on all tower interfaces -> reachable over LAN
     environment:

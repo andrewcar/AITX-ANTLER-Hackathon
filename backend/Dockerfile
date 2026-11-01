@@ -1,4 +1,7 @@
-FROM python:3.12-slim
+# Playwright's official Python image: Python 3.12 plus Chromium and its system
+# libraries, for the headless crawl (browser_crawl.py). Keep the tag in step with
+# the playwright pin in requirements.txt.
+FROM mcr.microsoft.com/playwright/python:v1.63.0-noble
 
 WORKDIR /app
 COPY requirements.txt .

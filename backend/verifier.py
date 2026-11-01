@@ -75,7 +75,7 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
         mark = "vqs" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
         payload = f'"><{mark}>'
         r = recon.send(chk["url"], chk.get("method", "get"),
-                       injection._data({"inputs": chk.get("inputs", [])}, chk["param"], payload),
+                       injection._data(chk, chk["param"], payload),
                        session)
         if f"<{mark}>" in r.get("body", ""):
             return True, "confirmed", f"marker reflected unescaped in '{chk['param']}' on re-probe"
@@ -84,7 +84,7 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
     if t == "sqli_error":
         from agents import injection
         r = recon.send(chk["url"], chk.get("method", "get"),
-                       injection._data({"inputs": chk.get("inputs", [])}, chk["param"], "'"),
+                       injection._data(chk, chk["param"], "'"),
                        session)
         sig = injection.sql_error_in(r.get("body", ""))
         if sig:
@@ -93,7 +93,7 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
 
     if t == "sqli_boolean":
         from agents import injection
-        sec = {"inputs": chk.get("inputs", [])}
+        sec = chk  # same field + submit control as the original probe
         m = chk.get("method", "get")
         tb = recon.send(chk["url"], m, injection._data(sec, chk["param"], chk["true"]), session).get("body", "")
         fb = recon.send(chk["url"], m, injection._data(sec, chk["param"], chk["false"]), session).get("body", "")
@@ -104,7 +104,7 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
     if t == "cmdi":
         from agents import injection
         r = recon.send(chk["url"], chk.get("method", "get"),
-                       injection._data({"inputs": chk.get("inputs", [])}, chk["param"], chk["payload"]),
+                       injection._data(chk, chk["param"], chk["payload"]),
                        session)
         if injection.UID_RE.search(r.get("body", "")):
             return True, "confirmed", f"command output reproduced for '{chk['param']}'"
@@ -113,7 +113,7 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
     if t == "lfi":
         from agents import injection
         r = recon.send(chk["url"], chk.get("method", "get"),
-                       injection._data({"inputs": chk.get("inputs", [])}, chk["param"], chk["payload"]),
+                       injection._data(chk, chk["param"], chk["payload"]),
                        session)
         if injection.PASSWD_RE.search(r.get("body", "")):
             return True, "confirmed", f"/etc/passwd reproduced via '{chk['param']}'"

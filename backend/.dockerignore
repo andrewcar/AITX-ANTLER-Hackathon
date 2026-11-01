@@ -1,0 +1,7 @@
+# Keep local state and secrets out of the image. backend/.env reaches the container
+# as environment variables via docker compose (env_file), never as a baked-in file.
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+var/
