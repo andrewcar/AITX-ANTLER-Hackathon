@@ -51,7 +51,7 @@ The database lives in the `dvwa-db` volume, so it survives restarts and `docker 
 |---|---|---|
 | AUTH | logged into DVWA (admin, security low) | anonymous (no known login) |
 | MAP | 15 pages · 11 forms | ~9 routes via the headless crawl (it's a single-page app); 2 API inputs |
-| Findings | **14–15**: 5–6 HIGH · 1 MED · 6 LOW · 2 INFO, all confirmed | **7**: 1 HIGH · 1 MED (`/ftp` listing) · 4 LOW · 1 INFO, all confirmed |
+| Findings | **14–15**: 5–6 HIGH · 1 MED · 6 LOW · 2 INFO, all confirmed | **8**: 1 HIGH · 1 MED (`/ftp` listing) · 4 LOW · 2 INFO (one is the Brotli check: Node detected, Brotli bodies rejected) |
 | HIGH examples | SQL injection (`id`, `username`), command injection (`ip`), local file inclusion (`page`), reflected XSS (`name`); plus exposed `config.inc.php.bak` (see below) | SQL injection (error-based) in the product search `q` |
 | Time at 200 ms | ~20 s | ~18–20 s (about 12 s of it is the headless crawl in MAP) |
 
