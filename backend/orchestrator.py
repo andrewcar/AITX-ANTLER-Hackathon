@@ -37,7 +37,7 @@ import llm
 import recon
 import reporter
 import verifier
-from agents import config_headers, exposed_paths, injection
+from agents import config_headers, exploited_cves, exposed_paths, injection
 from context import ScanContext
 from planner import plan
 
@@ -45,6 +45,7 @@ SPECIALISTS = {
     "config_headers": config_headers.run,
     "exposed_paths": exposed_paths.run,
     "injection": injection.run,
+    "exploited_cves": exploited_cves.run,
 }
 
 MAX_WORKERS = 8  # parallel specialists in the SWARM phase

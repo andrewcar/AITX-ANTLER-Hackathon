@@ -615,6 +615,7 @@ const AGENT_COLOR = {
   config_headers: "#20c997",
   exposed_paths: "#9775fa",
   injection: "#e9ecef",
+  exploited_cves: "#a9e34b",
 };
 const SEVS = ["critical", "high", "medium", "low", "info"];
 const SEV_COLOR = { critical: "#ff4757", high: "#ff4757", medium: "#ff9f1a", low: "#ffd43b", info: "#4dabf7" };
@@ -952,7 +953,7 @@ function createSwarm(canvas, stage) {
   }
 
   function seed(names) {
-    const list = names && names.length ? names : ["config_headers", "exposed_paths", "injection"];
+    const list = names && names.length ? names : ["config_headers", "exposed_paths", "injection", "exploited_cves"];
     list.forEach(name => { if (!drones.some(d => d.name === name)) spawn(name); });
     if (released) drones.forEach((drone, i) => { if (drone.state === "hold") fly(drone, i); });
   }
