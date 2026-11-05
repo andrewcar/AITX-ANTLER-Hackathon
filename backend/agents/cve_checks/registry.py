@@ -12,6 +12,7 @@ from . import (
     php2shell,
     wedevs,
     wordpress,
+    yootheme,
 )
 from .spec import CveCheck
 
@@ -27,6 +28,7 @@ CHECKS: tuple[CveCheck, ...] = (
     metabase.CHECK,
     langflow.CHECK,
     magento.CHECK,
+    yootheme.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
