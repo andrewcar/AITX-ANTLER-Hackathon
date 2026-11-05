@@ -77,10 +77,18 @@ def map_site(url: str, session=None) -> dict:
         if page["status"] == 0:
             continue
         pages.append({"url": cur, "status": page["status"]})
-        if _json_endpoint(page) and len(json_endpoints) < 10:
+        # Only a plain GET that already returned 2xx JSON. Form actions are not
+        # fetched here, and a non-2xx JSON body is not a probe target.
+        if (
+            _json_endpoint(page)
+            and 200 <= page["status"] < 300
+            and len(json_endpoints) < 10
+        ):
             json_endpoints.append({
                 "url": cur,
                 "status": page["status"],
+                "method": "get",
+                "source": "crawl",
                 "content_type": page.get("content_type") or "",
             })
 

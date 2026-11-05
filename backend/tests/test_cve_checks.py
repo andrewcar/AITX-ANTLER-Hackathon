@@ -36,7 +36,8 @@ BANNED = (
 )
 
 
-def _ctx(headers=None, body="", server="", fingerprint=None, endpoints=None, session=None):
+def _ctx(headers=None, body="", server="", fingerprint=None, endpoints=None,
+         forms=None, session=None):
     return SimpleNamespace(
         url="http://127.0.0.1:8081",
         recon_root={
@@ -47,13 +48,24 @@ def _ctx(headers=None, body="", server="", fingerprint=None, endpoints=None, ses
         },
         surface={
             "pages": [],
-            "forms": [],
+            "forms": forms or [],
             "params": [],
             "json_endpoints": endpoints or [],
         },
         session=session,
         fingerprint=fingerprint or {},
     )
+
+
+def _get_json(url, status=200):
+    """A crawl record: this scan already got 2xx JSON from a plain GET."""
+    return {
+        "url": url,
+        "status": status,
+        "method": "get",
+        "source": "crawl",
+        "content_type": "application/json",
+    }
 
 
 class Transport:
@@ -264,18 +276,21 @@ def test_brotli_probe_is_a_tiny_valid_json_stream():
     assert b"{" in recon.BROTLI_JSON_BODY
 
 
-def test_brotli_one_post_only_when_node_and_a_safe_json_endpoint(monkeypatch):
+def test_brotli_probes_a_get_verified_json_endpoint(monkeypatch):
     transport = Transport()
     _install(monkeypatch, transport)
     session = object()
     endpoints = [
-        {"url": "http://evil.example/api/x"},
-        {"url": "http://127.0.0.1:8081/api/delete-user"},
-        {"url": "http://127.0.0.1:8081/api/items"},
+        {"url": "http://evil.example/api/x", "method": "get", "status": 200, "source": "crawl"},
+        _get_json("http://127.0.0.1:8081/api/delete-user"),
+        _get_json("http://127.0.0.1:8081/api/items"),
     ]
+    # Also a form action. The GET-verified /api/items record is what gets probed.
+    forms = [{"action": "http://127.0.0.1:8081/api/items", "method": "post", "inputs": ["name"]}]
     target = _ctx(
         headers={"x-powered-by": "Express"},
         endpoints=endpoints,
+        forms=forms,
         session=session,
     )
     found = BROTLI.run({}, target)
@@ -287,12 +302,62 @@ def test_brotli_one_post_only_when_node_and_a_safe_json_endpoint(monkeypatch):
     assert "CVE-2026-111497" in found[0]["evidence"]
 
 
-def test_brotli_is_not_sent_without_a_runtime_or_an_endpoint(monkeypatch):
+def test_brotli_skips_post_only_and_form_action_urls(monkeypatch):
     transport = Transport()
     _install(monkeypatch, transport)
-    endpoints = [{"url": "http://127.0.0.1:8081/api/items"}]
-    assert BROTLI.run({}, _ctx(server="Ubuntu", endpoints=endpoints)) == []
-    assert BROTLI.run({}, _ctx(headers={"x-powered-by": "Express"})) == []
+    endpoints = [
+        {"url": "http://127.0.0.1:8081/api/create", "method": "post", "status": 201, "source": "post"},
+        {"url": "http://127.0.0.1:8081/api/submit", "method": "post", "status": 200, "source": "form"},
+        _get_json("http://127.0.0.1:8081/api/health", status=404),
+    ]
+    forms = [
+        {"action": "http://127.0.0.1:8081/api/submit", "method": "post", "inputs": ["name"]},
+        {"action": "http://127.0.0.1:8081/api/register", "method": "post", "inputs": ["email"]},
+    ]
+    found = BROTLI.run({}, _ctx(headers={"x-powered-by": "Express"}, endpoints=endpoints, forms=forms))
+    assert transport.calls == []
+    assert found[0]["severity"] == "info"
+    assert "skipped" in found[0]["title"].lower()
+    assert "no POST was sent" in found[0]["evidence"]
+
+
+def test_brotli_skips_state_changing_paths(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    base = "http://127.0.0.1:8081"
+    endpoints = [
+        _get_json(f"{base}/api/{name}")
+        for name in (
+            "login", "register", "signup", "reset", "delete",
+            "checkout", "orders", "pay", "upload", "admin",
+        )
+    ]
+    found = BROTLI.run({}, _ctx(headers={"x-powered-by": "Express"}, endpoints=endpoints))
+    assert transport.calls == []
+    assert found[0]["severity"] == "info"
+    # A safe GET-verified path is still the one POST, beside those keywords.
+    transport.calls.clear()
+    endpoints.append(_get_json(f"{base}/api/items"))
+    found = BROTLI.run({}, _ctx(headers={"x-powered-by": "Express"}, endpoints=endpoints))
+    assert [call[1] for call in transport.calls] == ["/api/items"]
+    assert found[0]["severity"] == "high"
+
+
+def test_brotli_skips_the_post_when_no_get_verified_endpoint(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    # Runtime, but the only record was never a 2xx GET.
+    found = BROTLI.run({}, _ctx(
+        headers={"x-powered-by": "Express"},
+        endpoints=[{"url": "http://127.0.0.1:8081/api/items"}],
+    ))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert "fingerprinted" in found[0]["title"].lower()
+    assert "skipped" in found[0]["title"].lower()
+    # No runtime at all: nothing to report, and still no POST.
+    assert BROTLI.run({}, _ctx(server="Ubuntu", endpoints=[_get_json("http://127.0.0.1:8081/api/items")])) == []
     assert transport.calls == []
 
 
@@ -309,7 +374,7 @@ def test_brotli_rejection_is_not_a_finding(monkeypatch, status, ctype, body):
     _install(monkeypatch, transport)
     target = _ctx(
         headers={"x-powered-by": "Express"},
-        endpoints=[{"url": "http://127.0.0.1:8081/api/items"}],
+        endpoints=[_get_json("http://127.0.0.1:8081/api/items")],
     )
     assert BROTLI.run({}, target) == []
     assert len(transport.calls) == 1
@@ -320,7 +385,7 @@ def test_brotli_verification_does_not_send_again(monkeypatch):
     _install(monkeypatch, transport)
     target = _ctx(
         fingerprint={"lang": "node"},
-        endpoints=[{"url": "http://127.0.0.1:8081/api/health"}],
+        endpoints=[_get_json("http://127.0.0.1:8081/api/health")],
     )
     found = BROTLI.run({}, target)[0]
     transport.calls.clear()
@@ -705,12 +770,22 @@ def test_crawler_records_json_documents_only(monkeypatch):
         "http://127.0.0.1/": {
             "status": 200,
             "content_type": "text/html",
-            "body": '<html><a href="/api/items">items</a></html>',
+            "body": (
+                '<html><a href="/api/items">items</a>'
+                '<a href="/api/login">login</a>'
+                '<form method="post" action="/api/order"><input name="q"></form>'
+                '</html>'
+            ),
         },
         "http://127.0.0.1/api/items": {
             "status": 200,
             "content_type": "application/json",
             "body": '{"items":[]}',
+        },
+        "http://127.0.0.1/api/login": {
+            "status": 401,
+            "content_type": "application/json",
+            "body": '{"error":"auth"}',
         },
     }
 
@@ -723,8 +798,14 @@ def test_crawler_records_json_documents_only(monkeypatch):
     assert surface["json_endpoints"] == [{
         "url": "http://127.0.0.1/api/items",
         "status": 200,
+        "method": "get",
+        "source": "crawl",
         "content_type": "application/json",
     }]
+    actions = [form["action"] for form in surface["forms"]]
+    assert "http://127.0.0.1/api/order" in actions
+    assert all("/api/order" not in item["url"] for item in surface["json_endpoints"])
+    assert all(item["status"] < 400 for item in surface["json_endpoints"])
 
 
 # --- request path guardrails ------------------------------------------------

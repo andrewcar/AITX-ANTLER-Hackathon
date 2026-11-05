@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (73 test functions).
+- **Tests:** `pytest` (75 test functions).
 
 ## Architecture
 
@@ -72,7 +72,7 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | --- | --- | --- | --- |
 | `php2shell` (misconfig) | CVE-2026-109618 / CVE-2026-109619 | Nothing extra. Reads `PHP/x.y.z` from the root response already fetched (X-Powered-By, Server, or that token in the body). Critical below 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 on that branch, or when the branch is EOL (before 8.2). | No phpinfo request, no multipart body, no upload fields, no exploit payload. |
 | `nextjs-rce` (misconfig) | GHSA-2464-fhr4-w9xw | Header, `/_next/` URL, or one GET of `/_next/static/<buildId>/_buildManifest.js` when a build id is on the page and the version is still hidden. Critical below 15.5.28 (15.x) or 16.4.1 (16.x). Info when Next.js is detected but the version is hidden. | No exploit payload, no RSC flight request, no POST. |
-| `node-brotli` (misconfig) | CVE-2026-111497 | After a Node/Express/Bun header fingerprint, one POST of a small valid Brotli JSON body (`Content-Encoding: br`) to a JSON URL the crawler already recorded, skipping logout/delete/upload/password/reset paths. Flags acceptance so the runtime can be checked (Node >= 22.23.4 / 24.22.1 / 26.12.1, Bun > 1.4.3). | No malformed or oversized stream, no second compressed body, no exploit payload. Verification does not send it again. |
+| `node-brotli` (misconfig) | CVE-2026-111497 | After a Node/Express/Bun header fingerprint, one POST of a small valid Brotli JSON body (`Content-Encoding: br`) only to a URL the crawler already saw answer a plain GET with 2xx JSON. Skips form actions, POST-only routes, and state-changing paths (login, register, signup, reset, delete, checkout, order, pay, upload, admin, and similar). Flags acceptance so the runtime can be checked (Node >= 22.23.4 / 24.22.1 / 26.12.1, Bun > 1.4.3). If no GET-verified JSON endpoint exists, the POST is not sent and the finding is Info. | No malformed or oversized stream, no second compressed body, no exploit payload. Verification does not send it again. |
 | `wedevs-project-manager` (recon) | CVE-2026-116512 | GET `/wp-content/plugins/wedevs-project-manager/readme.txt`. Critical when the Stable tag is 4.1.1 or lower. If that readme is the plugin, one GET `/wp-json/pm/v2` and an Info note on whether the route index answers without login. | No login, no POST/PUT/DELETE, no exploit payload. |
 | `nodered-admin` (auth) | CVE-2026-58115 | One GET `/settings`, and GET `/flows` only when `/settings` is not a Node-RED answer. Critical on HTTP 200 Node-RED JSON with no auth challenge: unauthenticated editor (`adminAuth` not set) means RCE. | Never POST `/flows`. No flow deploy, no exploit payload. |
 | `wordpress-core` (misconfig) | CVE-2026-119977 (CISA KEV) | Generator meta tag or core `?ver=` already in the page, otherwise one GET `/readme.html`. Critical, marked actively exploited, for 4.7 through 7.1.3 (fixed in 7.1.4). | Never requests upgrade or staging paths (`update-core`, wp-admin upgrade, `/wp-content/upgrade`). |
@@ -111,7 +111,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (73 test functions in `backend/tests/`):
+Tests (75 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q
@@ -141,7 +141,7 @@ Swarmageddon uses **no external datasets**. Its only inputs are the live HTTP re
 **Limitations today**
 - The crawl does not execute JavaScript, so SPA-only routes and DOM-rendered links can be missed.
 - Injection is capped at 20 work units per run to stay fast and polite.
-- Specialists cover security headers / cookies / version banners, reachable sensitive paths, injection on one field at a time, and the exploited-CVE registry. The Brotli check only uses a JSON URL the crawler already recorded, so an unlinked API is skipped.
+- Specialists cover security headers / cookies / version banners, reachable sensitive paths, injection on one field at a time, and the exploited-CVE registry. The Brotli check only POSTs to a URL that already answered a plain GET with 2xx JSON during this scan, so an unlinked, POST-only, or form-only route is skipped.
 - **Confirmation probes only** — it proves a weakness exists, it does not exploit, chain, or extract data.
 - Authenticated scanning currently recognizes the DVWA login flow only.
 
