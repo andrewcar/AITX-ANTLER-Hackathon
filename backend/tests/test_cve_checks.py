@@ -20,6 +20,7 @@ from agents.cve_checks.node_brotli import CHECK as BROTLI
 from agents.cve_checks.node_brotli import TITLE as BROTLI_TITLE
 from agents.cve_checks.nodered import CHECK as NODERED
 from agents.cve_checks.langflow import CHECK as LANGFLOW
+from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
@@ -876,6 +877,117 @@ def test_langflow_fixed_version_still_notes_auth_and_unknown_host_stops(monkeypa
     transport.routes["/api/v1/version"] = {"status": 200, "body": '{"version":"1.0.0"}'}
     assert LANGFLOW.run({}, _ctx()) == []
     assert [call[1] for call in transport.calls] == ["/api/v1/version"]
+
+
+# --- MLflow AI Gateway (CVE-2026-4035) --------------------------------------
+
+def _mlflow_page(version: str) -> str:
+    return (
+        "<html><head><title>MLflow</title>"
+        "<script src=\"/static-files/static/js/main.js\"></script>"
+        f"</head><body>MLflow {version}</body></html>"
+    )
+
+
+def _assert_one_get(transport):
+    assert transport.calls == [("GET", "/version", None, False)]
+    assert {call[0] for call in transport.calls} == {"GET"}
+
+
+@pytest.mark.parametrize("version", ["3.10.0", "3.10.1", "3.10.12"])
+def test_mlflow_unauthenticated_old_version_is_high(monkeypatch, version):
+    transport = Transport()
+    transport.routes["/version"] = {
+        "status": 200,
+        "content_type": "text/html; charset=utf-8",
+        "body": f"{version}\n",
+    }
+    _install(monkeypatch, transport)
+    found = MLFLOW.run({}, _ctx())
+    _assert_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["id"] == "mlflow"
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "no authentication challenge" in found[0]["evidence"]
+    assert "basic-auth" in found[0]["evidence"]
+    assert "3.11.0" in found[0]["fix"]
+    assert "basic-auth" in found[0]["fix"]
+    assert "api_base" in found[0]["fix"]
+    assert "$VAR" in found[0]["fix"]
+    assert "CVE-2026-4035" in found[0]["evidence"]
+    assert MLFLOW.agent == "misconfig"
+
+
+def test_mlflow_basic_auth_old_version_is_lower_severity(monkeypatch):
+    transport = Transport()
+    transport.routes["/version"] = {
+        "status": 401,
+        "content_type": "text/html",
+        "headers": {"WWW-Authenticate": 'Basic realm="mlflow"'},
+        "body": (
+            "You are not authenticated. Please see "
+            "https://www.mlflow.org/docs/latest/auth/index.html "
+            "on how to authenticate."
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = MLFLOW.run({}, _ctx(body=_mlflow_page("3.10.4")))
+    _assert_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "medium"
+    assert found[0]["severity"] != "high"
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "3.10.4" in found[0]["title"]
+    assert "authentication challenge" in found[0]["evidence"]
+    assert "basic-auth" in found[0]["evidence"]
+    assert "already collected" in found[0]["evidence"]
+    assert "$VAR" in found[0]["fix"]
+    assert "AWS" not in json.dumps(found)
+
+
+@pytest.mark.parametrize("body", ["3.11.0", "3.11.1\n", "3.12.0"])
+def test_mlflow_patched_version_is_not_a_finding(monkeypatch, body):
+    transport = Transport()
+    transport.routes["/version"] = {"status": 200, "body": body}
+    _install(monkeypatch, transport)
+    assert MLFLOW.run({}, _ctx(body=_mlflow_page("3.10.1"))) == []
+    _assert_one_get(transport)
+
+
+def test_mlflow_non_mlflow_404_is_not_a_finding(monkeypatch):
+    transport = Transport()
+    transport.routes["/version"] = {"status": 404, "body": "not found"}
+    _install(monkeypatch, transport)
+    assert MLFLOW.run({}, _ctx(body="<html><title>Welcome</title></html>")) == []
+    _assert_one_get(transport)
+    transport.calls.clear()
+    transport.routes["/version"] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": "<html><title>Other</title><p>version 3.10.1</p></html>",
+    }
+    assert MLFLOW.run({}, _ctx()) == []
+    _assert_one_get(transport)
+
+
+def test_mlflow_check_never_uses_another_method(monkeypatch):
+    transport = Transport()
+    transport.routes["/version"] = {"status": 200, "body": "3.10.2"}
+    _install(monkeypatch, transport)
+    MLFLOW.run({}, _ctx())
+    assert len(transport.calls) == 1
+    method, path, session, follow = transport.calls[0]
+    assert method == "GET"
+    assert path == "/version"
+    assert session is None
+    assert follow is False
+    text = (ROOT / "agents" / "cve_checks" / "mlflow_gateway.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    for banned in ("/gateway", "/api/2.0/mlflow/gateway", "api/2.0/endpoints"):
+        assert banned not in text
 
 
 # --- Magento ----------------------------------------------------------------

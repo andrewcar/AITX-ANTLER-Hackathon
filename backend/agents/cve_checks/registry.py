@@ -6,6 +6,7 @@ from . import (
     langflow,
     magento,
     metabase,
+    mlflow_gateway,
     nextjs,
     node_brotli,
     nodered,
@@ -29,6 +30,7 @@ CHECKS: tuple[CveCheck, ...] = (
     langflow.CHECK,
     magento.CHECK,
     yootheme.CHECK,
+    mlflow_gateway.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
