@@ -152,6 +152,10 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
             return True, "confirmed", f"server banner still discloses version: {server!r}"
         return False, "rejected", "server banner no longer discloses a version"
 
+    if t == "cve":
+        from agents.cve_checks import verify_finding
+        return verify_finding(chk, url, session, fresh)
+
     return False, "unverified", "no machine check for this finding"
 
 

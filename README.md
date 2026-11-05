@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (33 test functions).
+- **Tests:** `pytest` (73 test functions).
 
 ## Architecture
 
@@ -27,6 +27,7 @@ flowchart LR
     CH["config_headers"]
     EP["exposed_paths"]
     INJ["injection"]
+    CVE["CVE registry: misconfig · recon · auth · secrets"]
   end
   SWARM --> VERIFY["VERIFY: re-check each finding"] --> REPORT["REPORT: ranked"]
   REPORT --> UI
@@ -43,7 +44,7 @@ flowchart LR
 | AUTH   | `auth.py`, `recon.py` | One shared session. Logs in if the target is recognized (currently DVWA, lab creds from env). |
 | MAP    | `recon.py`, `crawler.py`, `fingerprint.py` | Root recon, bounded same-host BFS crawl (pages, forms, params, no JS execution), evidence-based stack fingerprint. |
 | PLAN   | `planner.py` | Pairs discovered sections with relevant specialists to produce work units (stack-aware, capped at 20 injection units). |
-| SWARM  | `agents/config_headers.py`, `agents/exposed_paths.py`, `agents/injection.py` | Units run in parallel (thread pool, `MAX_WORKERS = 8`), all writing to one shared `ScanContext`. |
+| SWARM  | `agents/config_headers.py`, `agents/exposed_paths.py`, `agents/injection.py`, `agents/cve_checks/` | Units run in parallel (thread pool, `MAX_WORKERS = 8`), all writing to one shared `ScanContext`. |
 | VERIFY | `verifier.py` | Re-checks each finding on a fresh request: `confirmed`, `rejected`, or `unverified` (left for a human). |
 | REPORT | `reporter.py` | Dedupes, assigns stable ids, ranks by verdict, then severity, then source (deterministic first). |
 
@@ -51,6 +52,7 @@ Specialists:
 - **config_headers**: missing security headers, insecure cookies, version banners.
 - **exposed_paths**: sensitive paths that are actually reachable. A random-path baseline, file-type checks, and content signatures suppress catch-all false positives (e.g. Juice Shop answers 200 for any path).
 - **injection**: reflected XSS, error-based and boolean-blind SQLi, command injection, and LFI on one form field or query parameter.
+- **CVE registry** (`misconfig`, `recon`, `auth`, `secrets`): one work unit per entry in `backend/agents/cve_checks/`. See **Exploited-CVE checks**.
 
 ## Safety guardrails
 
@@ -61,6 +63,25 @@ Specialists:
   - `VULNSWARM_REQUEST_INTERVAL_MS`: default `50`. Minimum gap between requests within one scan.
   - `VULNSWARM_GLOBAL_REQUEST_INTERVAL_MS`: default `25`. Minimum gap between any two requests.
 - **Append-only audit log** (`audit.py`): JSONL, one record per line, never rewritten. It records scan start, stop, reject, and outcome events, plus each outbound request (method, URL, status). Request bodies are not stored. Default path is `backend/var/audit.jsonl`; override it with `VULNSWARM_AUDIT_LOG`. `GET /audit` returns the newest records and the live limits.
+
+## Exploited-CVE checks
+
+These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agent, fixed versions, what the check sends). A later advisory is a new module plus one list entry, and for a dependency pin, one object in `vulnerable_pins.json`. Every request goes through `recon._do` (allowlist on redirects, kill switch, global rate limit, audit log). Version hits say **version appears vulnerable (unconfirmed)** and cite the fixed releases. They do not claim the bug was exploited.
+
+| Check | Advisory | What it sends | What it does not send |
+| --- | --- | --- | --- |
+| `php2shell` (misconfig) | CVE-2026-109618 / CVE-2026-109619 | Nothing extra. Reads `PHP/x.y.z` from the root response already fetched (X-Powered-By, Server, or that token in the body). Critical below 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 on that branch, or when the branch is EOL (before 8.2). | No phpinfo request, no multipart body, no upload fields, no exploit payload. |
+| `nextjs-rce` (misconfig) | GHSA-2464-fhr4-w9xw | Header, `/_next/` URL, or one GET of `/_next/static/<buildId>/_buildManifest.js` when a build id is on the page and the version is still hidden. Critical below 15.5.28 (15.x) or 16.4.1 (16.x). Info when Next.js is detected but the version is hidden. | No exploit payload, no RSC flight request, no POST. |
+| `node-brotli` (misconfig) | CVE-2026-111497 | After a Node/Express/Bun header fingerprint, one POST of a small valid Brotli JSON body (`Content-Encoding: br`) to a JSON URL the crawler already recorded, skipping logout/delete/upload/password/reset paths. Flags acceptance so the runtime can be checked (Node >= 22.23.4 / 24.22.1 / 26.12.1, Bun > 1.4.3). | No malformed or oversized stream, no second compressed body, no exploit payload. Verification does not send it again. |
+| `wedevs-project-manager` (recon) | CVE-2026-116512 | GET `/wp-content/plugins/wedevs-project-manager/readme.txt`. Critical when the Stable tag is 4.1.1 or lower. If that readme is the plugin, one GET `/wp-json/pm/v2` and an Info note on whether the route index answers without login. | No login, no POST/PUT/DELETE, no exploit payload. |
+| `nodered-admin` (auth) | CVE-2026-58115 | One GET `/settings`, and GET `/flows` only when `/settings` is not a Node-RED answer. Critical on HTTP 200 Node-RED JSON with no auth challenge: unauthenticated editor (`adminAuth` not set) means RCE. | Never POST `/flows`. No flow deploy, no exploit payload. |
+| `wordpress-core` (misconfig) | CVE-2026-119977 (CISA KEV) | Generator meta tag or core `?ver=` already in the page, otherwise one GET `/readme.html`. Critical, marked actively exploited, for 4.7 through 7.1.3 (fixed in 7.1.4). | Never requests upgrade or staging paths (`update-core`, wp-admin upgrade, `/wp-content/upgrade`). |
+| `dependency-files` (secrets) | CVE-2026-57845 and any later pin in `vulnerable_pins.json` | One baseline GET, then GET of `requirements.txt`, `poetry.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`. Flags a public file, then any known-vulnerable pin. `datasets<=5.1.0` is an unpatched pickle RCE. | No install, no import, no pickle load, no POST. |
+| `metabase` (recon) | CVE-2026-72898 (CVSS 10, KEV) | One GET `/api/session/properties`. Critical below 0.58.24 / 0.59.21 / 0.60.17 / 0.61.11 / 0.62.9 / 0.63.5 on that branch. | Never requests the password-reset route. No POST, no session token, no exploit payload. |
+| `langflow` (auth) | CVE-2026-93680 / CVE-2026-110186 | GET `/api/v1/version`. Critical below 1.13.0. When the body is Langflow, GET `/api/v1/mcp` and GET `/api/v1/auto_login` and note whether tools are listed without login and whether auto-login answers. | Never uses a returned token, never runs a flow, no POST. The token is not copied into the finding. |
+| `magento-polyshell` (recon) | CVE-2026-48356 (APSB26-73) | Version from the root response, or one GET `/magento_version`. Critical for versions before 2.4.9. | No backdoor-path probing, no admin crawl, no exploit payload, no POST. |
+
+The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
 ## Triage: rule-based by default
 
@@ -90,7 +111,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (33 test functions in `backend/tests/`):
+Tests (73 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q
@@ -120,7 +141,7 @@ Swarmageddon uses **no external datasets**. Its only inputs are the live HTTP re
 **Limitations today**
 - The crawl does not execute JavaScript, so SPA-only routes and DOM-rendered links can be missed.
 - Injection is capped at 20 work units per run to stay fast and polite.
-- A fixed specialist set: security headers / cookies / version banners, reachable sensitive paths, and reflected XSS + SQLi + command injection + LFI on one field at a time.
+- Specialists cover security headers / cookies / version banners, reachable sensitive paths, injection on one field at a time, and the exploited-CVE registry. The Brotli check only uses a JSON URL the crawler already recorded, so an unlinked API is skipped.
 - **Confirmation probes only** — it proves a weakness exists, it does not exploit, chain, or extract data.
 - Authenticated scanning currently recognizes the DVWA login flow only.
 
