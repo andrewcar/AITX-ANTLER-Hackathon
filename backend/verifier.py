@@ -119,6 +119,10 @@ def _verify_deterministic(f, fresh, headers, cookies, url, session=None):
             return True, "confirmed", f"/etc/passwd reproduced via '{chk['param']}'"
         return False, "rejected", f"/etc/passwd not reproduced for '{chk['param']}'"
 
+    if t and t.startswith("cve_"):
+        from agents import exploited_cves
+        return exploited_cves.recheck(chk, fresh, url, session)
+
     if t == "exposed_path":
         p, sig = chk["path"], chk.get("sig")
         r = recon.probe(url.rstrip("/") + p, session)

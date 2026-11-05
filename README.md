@@ -14,7 +14,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (45 test functions; the 5 headless-crawl tests skip when Chromium isn't installed).
+- **Tests:** `pytest` (94 tests; the 5 headless-crawl tests skip when Chromium isn't installed).
 
 ## Architecture
 
@@ -52,6 +52,7 @@ Specialists:
 - **config_headers**: missing security headers, insecure cookies, version banners.
 - **exposed_paths**: sensitive paths that are actually reachable. A random-path baseline, file-type checks, and content signatures suppress catch-all false positives (e.g. Juice Shop answers 200 for any path).
 - **injection**: reflected XSS, error-based and boolean-blind SQLi, command injection, and LFI on one form field or query parameter.
+- **exploited_cves**: six exploit-free checks for actively exploited CVEs (PHP2Shell, Next.js, Node2Shell Brotli, weDevs Project Manager, Node-RED without login, Magento PolyShell). See [Exploited-CVE checks](#exploited-cve-checks).
 
 ## Safety guardrails
 
@@ -63,6 +64,21 @@ Specialists:
   - `VULNSWARM_GLOBAL_REQUEST_INTERVAL_MS`: default `25`. Minimum gap between any two requests.
 - **Headless crawl** (`browser_crawl.py`): same origin only, with every request (and each redirect hop) re-checked against the allowlist; read-only (GET/HEAD; never submits); refusals audited as `BROWSER_REFUSED`; capped at 50 routes and 60 s; honors STOP and pacing because every request goes through `recon._do`. Anything that could bypass interception is blocked (service workers off, traffic pointed at a dead proxy, DNS disabled). `VULNSWARM_BROWSER_CRAWL`: `auto` (default; only when the HTML crawl finds nothing to probe), `on`, or `off`.
 - **Append-only audit log** (`audit.py`): JSONL, one record per line, never rewritten. It records scan start, stop, reject, and outcome events, plus each outbound request (method, URL, status). Request bodies are not stored. Default path is `backend/var/audit.jsonl`; override it with `VULNSWARM_AUDIT_LOG`. `GET /audit` returns the newest records and the live limits.
+
+## Exploited-CVE checks
+
+The `exploited_cves` specialist (`backend/agents/exploited_cves.py`) looks for six actively exploited issues **without exploiting anything**. Every request goes through `recon._do`, so the allowlist (paths are joined onto the allowlisted target; crawl-found URLs are re-checked for the same origin), the global rate limit, the kill switch and the audit log all apply. Version-based findings say **"version appears vulnerable (unconfirmed)"**: Linux distributions backport fixes, and a version string never proves exploitability. Each finding cites its advisory and fixed versions.
+
+| Check | Advisory | What it sends | What it never sends | Finding |
+|---|---|---|---|---|
+| PHP2Shell | CVE-2026-109618 / -109619 | Nothing: reads `X-Powered-By` / `Server` from the home-page response | Any PHP-specific request or payload | **Critical** if below 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 on its branch, or on an end-of-life branch (8.1 and older) |
+| Next.js RCEs | GHSA-2464-fhr4-w9xw (also GHSA-673q-mjm6-r5xr, CVE-2026-96889) | Detects Next.js from the home page; GET of at most one `/_next/static/chunks/main-app…js` to read `window.next.version` | Server Actions, image-optimizer or RSC requests | **Critical** below 15.5.28 (15.x) / 16.4.1 (16.x), or on 13.x/14.x (no patched release); **Info** "Next.js detected, version unknown, verify patched" |
+| Node2Shell Brotli | CVE-2026-111497 | Passive Node/Express/Bun fingerprint (headers, Node-style ETags). Then GET of one crawl-found JSON endpoint for a baseline, then **one** GET to it with a **6-byte valid Brotli body of `{}`** (`Content-Encoding: br`), audited as `GET+br-body` | POST/PUT, malformed or oversized Brotli, anything when there is no Node fingerprint or no JSON endpoint | **Critical** "Node + Brotli request bodies accepted, check runtime >= 22.23.4 / 24.22.1 / 26.12.1, Bun > 1.4.3"; **Info** when the body is rejected (415). Not re-sent by the verifier |
+| weDevs Project Manager | CVE-2026-116512 | GET `/wp-content/plugins/wedevs-project-manager/readme.txt`; GET `/wp-json/pm/v2` (only when WordPress or the plugin is seen) | Any authenticated or write REST call | **Critical** if `Stable tag` ≤ 4.1.1; **Info** whether the pm/v2 index answers without login |
+| Node-RED admin API | adminAuth not set (CWE-306; cf. CVE-2026-58115, Siemens SIMATIC IoT2050) | **One** GET `/settings`; GET `/flows` only if `/settings` is 404 | POST `/flows`, deploys, or any change | **Critical** "Unauthenticated Node-RED editor (adminAuth not set) = remote code execution". Not re-sent by the verifier |
+| Magento PolyShell | CVE-2026-48356, Adobe APSB26-73 | GET `/magento_version`, only when the home page fingerprints as Magento | Uploads, cart/REST calls, backdoor-path probes | **Critical** below 2.4.9; **Info** on 2.4.9 (Adobe lists it affected until the isolated APSB26-73 patch is applied) or when the patch level is hidden |
+
+On a target that matches none of them, the specialist costs four GETs: the home page, the weDevs readme, `/settings` and `/flows`.
 
 ## Triage: rule-based by default
 
@@ -92,7 +108,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (45 test functions in `backend/tests/`; the headless-crawl tests need Playwright's Chromium and skip without it):
+Tests (94 tests in `backend/tests/`; the headless-crawl tests need Playwright's Chromium and skip without it):
 
 ```bash
 cd backend && python -m pytest tests/ -q

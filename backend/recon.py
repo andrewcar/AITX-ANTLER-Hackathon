@@ -156,10 +156,14 @@ def _exchange(req, timeout, read):
 
 
 def _do(internal_url, session=None, method="GET", data=None, timeout=10,
-        read=16000, follow=True, _depth=0):
+        read=16000, follow=True, _depth=0, body=None, extra_headers=None, audit_action=None):
     """Central request. Returns (status, headers, body_bytes) or None on network fail.
     Cookies from the Session are sent and updated on every hop; redirects are followed
     manually (when follow=True) so cookies propagate correctly.
+
+    body/extra_headers send a raw request body with the given method (used once, by the
+    exploited-CVE Brotli check: a GET with a tiny valid Brotli body). audit_action labels
+    that request in the audit log. Pacing, the kill switch and auditing are unchanged.
 
     Raises control.ScanStopped when the current scan's kill switch is set.
     """
@@ -170,7 +174,10 @@ def _do(internal_url, session=None, method="GET", data=None, timeout=10,
         h = session.header()
         if h:
             headers["Cookie"] = h
-    if method == "POST":
+    headers.update(extra_headers or {})
+    if body is not None:
+        req = urllib.request.Request(internal_url, data=body, headers=headers, method=method)
+    elif method == "POST":
         req = urllib.request.Request(internal_url, data=urlencode(data or {}).encode(),
                                      headers=headers, method="POST")
     else:
@@ -182,11 +189,12 @@ def _do(internal_url, session=None, method="GET", data=None, timeout=10,
         exchanged = _exchange(req, timeout, read)
     except control.ScanStopped:
         raise
+    action = audit_action or method
     if exchanged is None:
-        control.note_request(method, internal_url, 0)
+        control.note_request(action, internal_url, 0)
         return None
     status, rhdrs, body = exchanged
-    control.note_request(method, internal_url, status)
+    control.note_request(action, internal_url, status)
     if session and rhdrs is not None:
         session.update(rhdrs)
     if follow and status in _REDIRECT_CODES and _depth < 5 and rhdrs is not None:
