@@ -269,7 +269,10 @@ def test_next_header_version_does_not_fetch_and_flags_critical(monkeypatch):
 # --- Node Brotli ------------------------------------------------------------
 
 def test_brotli_probe_is_a_tiny_valid_json_stream():
-    import brotli
+    # `brotli` is only needed to decode-validate the constant; the runtime ships the
+    # bytes hardcoded. Skip (like the Playwright tests) when it isn't installed, so a
+    # bare-venv `pytest` doesn't error on a package the scanner never imports.
+    brotli = pytest.importorskip("brotli")
     assert recon.BROTLI_JSON == b'{"vulnswarm":"ok"}'
     assert brotli.decompress(recon.BROTLI_JSON_BODY) == recon.BROTLI_JSON
     assert len(recon.BROTLI_JSON_BODY) < 64
