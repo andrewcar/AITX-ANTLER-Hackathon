@@ -1,0 +1,10 @@
+[
+  {
+    "name": "datasets",
+    "ecosystem": "pypi",
+    "cve": "CVE-2026-57845",
+    "affected": "<=5.1.0",
+    "fixed": "",
+    "summary": "unpatched pickle RCE"
+  }
+]

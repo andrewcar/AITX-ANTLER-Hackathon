@@ -4,7 +4,12 @@ PLAN phase — pair sections with the specialists relevant to them.
 A work unit = {"specialist": name, "section": {...}}. The orchestrator runs these in
 parallel. This is where "agents focused on specific sections" becomes concrete, and
 where stack-awareness lives (e.g. PHP targets get the php-flavored injection checks).
+
+Exploited-CVE checks are one unit per registry entry. Adding a check does not
+require a new branch in this function.
 """
+from agents.cve_checks import plan_units
+
 MAX_INJECTION_UNITS = 20
 
 # Guardrails: active injection submits forms, which can have DESTRUCTIVE side effects
@@ -77,4 +82,5 @@ def plan(ctx) -> list[dict]:
         }})
         inj += 1
 
+    units.extend(plan_units(ctx))
     return units

@@ -9,6 +9,7 @@ Bounded BFS from the target, same host only. Produces:
 Stdlib only (html.parser). Kept small and safe: capped pages/depth, no JS execution.
 """
 import html.parser
+import json
 from urllib.parse import urljoin, urlparse, parse_qs
 
 import control
@@ -44,11 +45,26 @@ class _HTMLScan(html.parser.HTMLParser):
             self._form = None
 
 
+def _json_endpoint(page: dict) -> bool:
+    """True when a crawled response is a JSON document, not an HTML shell."""
+    ctype = (page.get("content_type") or "").lower()
+    if "json" in ctype and "html" not in ctype:
+        return True
+    body = (page.get("body") or "").lstrip()
+    if not body or body[0] not in "{[":
+        return False
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(parsed, (dict, list))
+
+
 def map_site(url: str, session=None) -> dict:
     target_host = urlparse(url).hostname
     seen: set[str] = set()
     queue: list[tuple[str, int]] = [(url, 0)]
-    pages, forms, params = [], [], []
+    pages, forms, params, json_endpoints = [], [], [], []
 
     while queue and len(pages) < MAX_PAGES:
         control.checkpoint()
@@ -61,6 +77,20 @@ def map_site(url: str, session=None) -> dict:
         if page["status"] == 0:
             continue
         pages.append({"url": cur, "status": page["status"]})
+        # Only a plain GET that already returned 2xx JSON. Form actions are not
+        # fetched here, and a non-2xx JSON body is not a probe target.
+        if (
+            _json_endpoint(page)
+            and 200 <= page["status"] < 300
+            and len(json_endpoints) < 10
+        ):
+            json_endpoints.append({
+                "url": cur,
+                "status": page["status"],
+                "method": "get",
+                "source": "crawl",
+                "content_type": page.get("content_type") or "",
+            })
 
         # query-string params on this URL are injectable sections
         for p in parse_qs(urlparse(cur).query):
@@ -91,4 +121,4 @@ def map_site(url: str, session=None) -> dict:
                 if nu.hostname == target_host and nxt.split("#")[0] not in seen:
                     queue.append((nxt.split("#")[0], depth + 1))
 
-    return {"pages": pages, "forms": forms, "params": params}
+    return {"pages": pages, "forms": forms, "params": params, "json_endpoints": json_endpoints}

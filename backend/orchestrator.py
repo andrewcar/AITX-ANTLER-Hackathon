@@ -34,6 +34,7 @@ import recon
 import reporter
 import verifier
 from agents import config_headers, exposed_paths, injection
+from agents.cve_checks import run as run_cve_check
 from context import ScanContext
 from planner import plan
 
@@ -41,6 +42,12 @@ SPECIALISTS = {
     "config_headers": config_headers.run,
     "exposed_paths": exposed_paths.run,
     "injection": injection.run,
+    # CVE registry. The section's check_id selects the advisory; several
+    # advisories share one specialist name.
+    "misconfig": run_cve_check,
+    "recon": run_cve_check,
+    "auth": run_cve_check,
+    "secrets": run_cve_check,
 }
 
 MAX_WORKERS = 8  # parallel specialists in the SWARM phase
@@ -288,6 +295,8 @@ def _section_brief(section: dict | None) -> dict:
     if not isinstance(section, dict):
         return {}
     brief = {}
+    if section.get("check_id"):
+        brief["check_id"] = section["check_id"]
     if section.get("kind"):
         brief["kind"] = section["kind"]
     if section.get("param"):
@@ -299,6 +308,8 @@ def _section_brief(section: dict | None) -> dict:
 
 def _section_label(section: dict | None) -> str:
     brief = _section_brief(section)
+    if brief.get("check_id"):
+        return str(brief["check_id"])
     if brief.get("param"):
         return str(brief["param"])
     return str(brief.get("kind") or "")

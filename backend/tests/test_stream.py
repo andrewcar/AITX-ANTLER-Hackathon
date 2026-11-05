@@ -93,6 +93,8 @@ def _install_pipeline(monkeypatch, state):
         "source": "deterministic",
         "check": {"type": "xss_reflect", "payload": "SHOULD_NOT_STREAM"},
     }))
+    for name in ("misconfig", "recon", "auth", "secrets"):
+        monkeypatch.setitem(orchestrator.SPECIALISTS, name, specialist(None))
 
     def verify(findings, url, session=None, on_verdict=None):
         for finding in findings:
@@ -140,7 +142,10 @@ def test_run_scan_emits_live_events_and_keeps_blocking_shape(monkeypatch):
     assert set(result) == RESULT_KEYS
     assert "status" not in result
     assert events[0]["type"] == "scan_started"
-    assert events[0]["agents"] == ["config_headers", "exposed_paths", "injection"]
+    assert events[0]["agents"] == [
+        "config_headers", "exposed_paths", "injection",
+        "misconfig", "recon", "auth", "secrets",
+    ]
     assert events[-1]["type"] == "scan_complete"
     assert events[-1]["status"] == "complete"
     assert events[-1]["run_id"] == result["run_id"]
@@ -155,7 +160,9 @@ def test_run_scan_emits_live_events_and_keeps_blocking_shape(monkeypatch):
 
     started_units = [e for e in events if e["type"] == "agent" and e["status"] == "started"]
     finished_units = [e for e in events if e["type"] == "agent" and e["status"] == "finished"]
-    assert len(started_units) == len(finished_units) == result["units"] == 3
+    from agents.cve_checks import CHECKS
+    # site headers, exposed paths, one injection param, plus one unit per CVE check
+    assert len(started_units) == len(finished_units) == result["units"] == 3 + len(CHECKS)
     assert state["max"] >= 2
 
     by_unit = {}

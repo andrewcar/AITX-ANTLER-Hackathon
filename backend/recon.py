@@ -31,6 +31,15 @@ SECURITY_HEADERS = [
     "x-content-type-options", "referrer-policy", "permissions-policy",
 ]
 
+# How much of the root document recon keeps for passive fingerprints (generator
+# tags, /_next/ URLs, PHP/x.y.z). Same request as before; the bytes are not discarded.
+BODY_SNIPPET_BYTES = 32768
+
+# The only raw body _do will send: brotli(b'{"vulnswarm":"ok"}').
+# Produced by brotli.compress(..., quality=11). The JSON literal is in the stream.
+BROTLI_JSON = b'{"vulnswarm":"ok"}'
+BROTLI_JSON_BODY = bytes.fromhex("8b08807b2276756c6e737761726d223a226f6b227d03")
+
 
 class Session:
     """Cookie store shared across a scan (one target per scan), keyed by name only.
@@ -156,13 +165,23 @@ def _exchange(req, timeout, read):
 
 
 def _do(internal_url, session=None, method="GET", data=None, timeout=10,
-        read=16000, follow=True, _depth=0):
+        read=16000, follow=True, _depth=0, raw_body=None):
     """Central request. Returns (status, headers, body_bytes) or None on network fail.
     Cookies from the Session are sent and updated on every hop; redirects are followed
     manually (when follow=True) so cookies propagate correctly.
 
     Raises control.ScanStopped when the current scan's kill switch is set.
+
+    ``raw_body`` is accepted only for the one valid Brotli JSON probe. Any other
+    body is refused before the rate limit, the socket, or the audit log.
     """
+    method = (method or "GET").upper()
+    if method not in ("GET", "POST"):
+        raise ValueError("only GET and POST are allowed")
+    if raw_body is not None and raw_body != BROTLI_JSON_BODY:
+        raise ValueError("refusing a request body other than the one valid Brotli JSON probe")
+    if raw_body is not None and method != "POST":
+        raise ValueError("the Brotli JSON probe is only sent as POST")
     control.checkpoint()
     control.pace()
     headers = {"User-Agent": "VulnSwarm/0.1"}
@@ -170,7 +189,12 @@ def _do(internal_url, session=None, method="GET", data=None, timeout=10,
         h = session.header()
         if h:
             headers["Cookie"] = h
-    if method == "POST":
+    if raw_body is not None:
+        headers["Content-Type"] = "application/json"
+        headers["Content-Encoding"] = "br"
+        headers["Accept"] = "application/json"
+        req = urllib.request.Request(internal_url, data=raw_body, headers=headers, method="POST")
+    elif method == "POST":
         req = urllib.request.Request(internal_url, data=urlencode(data or {}).encode(),
                                      headers=headers, method="POST")
     else:
@@ -202,14 +226,24 @@ def _do(internal_url, session=None, method="GET", data=None, timeout=10,
     return status, rhdrs, body
 
 
+def _header_map(rhdrs) -> dict:
+    if rhdrs is None:
+        return {}
+    try:
+        pairs = rhdrs.items()
+    except Exception:
+        return {}
+    return {str(k).lower(): v for k, v in pairs}
+
+
 def scan(url: str, session: "Session | None" = None) -> dict:
     """GET the target root; collect factual evidence. Raises if unreachable."""
     internal = resolve(url)
-    res = _do(internal, session, read=4000)
+    res = _do(internal, session, read=BODY_SNIPPET_BYTES)
     if res is None:
         raise RuntimeError(f"target unreachable: {url}")
-    status, rhdrs, _ = res
-    raw = {k.lower(): v for k, v in rhdrs.items()}
+    status, rhdrs, raw_body = res
+    raw = _header_map(rhdrs)
     set_cookie = rhdrs.get_all("Set-Cookie") or []
     return {
         "url": url,
@@ -219,6 +253,49 @@ def scan(url: str, session: "Session | None" = None) -> dict:
         "missing_security_headers": [h for h in SECURITY_HEADERS if h not in raw],
         "set_cookie": set_cookie,
         "raw_headers": raw,
+        "body_snippet": raw_body.decode("utf-8", "replace"),
+    }
+
+
+def fetch(full_url: str, session: "Session | None" = None, max_bytes: int = 65536,
+          follow: bool = False) -> dict:
+    """GET a URL through _do. Default is one hop: redirects are not followed."""
+    res = _do(resolve(full_url), session, read=max_bytes, follow=follow)
+    if res is None:
+        return {"url": full_url, "status": 0, "content_type": "", "headers": {},
+                "body": "", "length": 0}
+    status, rhdrs, body = res
+    headers = _header_map(rhdrs)
+    text = body.decode("utf-8", "replace")
+    return {
+        "url": full_url,
+        "status": status,
+        "content_type": (headers.get("content-type") or "").lower(),
+        "headers": headers,
+        "body": text,
+        "length": len(body),
+    }
+
+
+def post_brotli_json(full_url: str, session: "Session | None" = None) -> dict:
+    """The one non-GET CVE probe: a tiny valid Brotli JSON body. Exactly one hop."""
+    res = _do(
+        resolve(full_url), session, method="POST", raw_body=BROTLI_JSON_BODY,
+        read=8000, follow=False,
+    )
+    if res is None:
+        return {"url": full_url, "status": 0, "content_type": "", "headers": {},
+                "body": "", "length": 0}
+    status, rhdrs, body = res
+    headers = _header_map(rhdrs)
+    text = body.decode("utf-8", "replace")
+    return {
+        "url": full_url,
+        "status": status,
+        "content_type": (headers.get("content-type") or "").lower(),
+        "headers": headers,
+        "body": text,
+        "length": len(body),
     }
 
 
