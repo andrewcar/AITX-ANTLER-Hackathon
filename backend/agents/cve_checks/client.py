@@ -51,6 +51,34 @@ def fetch_path(ctx, path: str, max_bytes: int = 65536) -> dict:
     return recon.fetch(base + path, session=None, max_bytes=max_bytes, follow=False)
 
 
+def _empty_fetch(url: str = "") -> dict:
+    return {
+        "url": url, "status": 0, "content_type": "", "headers": {},
+        "body": "", "length": 0,
+    }
+
+
+def page_url(ctx) -> str:
+    """In-scope page URL, path only. No query string is copied onto it."""
+    root = getattr(ctx, "recon_root", None) or {}
+    raw = (root.get("url") or getattr(ctx, "url", "") or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return ""
+    path = parsed.path or "/"
+    if not path.startswith("/") or path.startswith("//") or "\\" in path or ".." in path:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
+def fetch_page(ctx, max_bytes: int = 65536) -> dict:
+    """Unauthenticated GET of the in-scope page path. Does not follow redirects."""
+    url = page_url(ctx)
+    if not url:
+        return _empty_fetch()
+    return recon.fetch(url, session=None, max_bytes=max_bytes, follow=False)
+
+
 def same_target(ctx, url: str) -> bool:
     """True when ``url`` is http(s) on the same host and port as the scan target."""
     base = base_url(ctx)

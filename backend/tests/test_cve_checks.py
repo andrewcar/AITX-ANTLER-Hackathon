@@ -23,6 +23,7 @@ from agents.cve_checks.langflow import CHECK as LANGFLOW
 from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
+from agents.cve_checks.yootheme import CHECK as YOOTHEME
 import planner
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -535,6 +536,165 @@ def test_wordpress_readme_is_the_only_extra_get(monkeypatch):
     joined = " ".join(call[1] for call in transport.calls)
     for banned in ("update-core", "upgrade.php", "/wp-content/upgrade"):
         assert banned not in joined
+
+
+# --- YOOtheme Pro ----------------------------------------------------------
+
+_HANDLER = (
+    "fromfile",
+    "save=",
+    "php://",
+    "php%3a",
+    "yootheme=cache",
+    "/yootheme/cache",
+    "wp-content/uploads",
+)
+
+
+def _assert_yootheme_passive(transport):
+    assert len(transport.calls) <= 1
+    for method, path, session, follow in transport.calls:
+        assert method == "GET"
+        assert method != "POST"
+        assert session is None and follow is False
+        blob = path.lower()
+        for banned in _HANDLER:
+            assert banned not in blob
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("5.0.0", True), ("5.0.52", True), ("5.0.53", False), ("5.0.54", False),
+    ("5.1.0", False), ("4.5.28", False), ("4.0.0", False), ("3.0.16", False),
+])
+def test_yootheme_version_matrix(version, vulnerable):
+    from agents.cve_checks.versions import parse_dotted
+    from agents.cve_checks.yootheme import affected
+    assert affected(parse_dotted(version)) is vulnerable
+
+
+@pytest.mark.parametrize("html", [
+    '<link rel="stylesheet" href="/wp-content/themes/yootheme/css/theme.css?ver=5.0.52" />'
+    '<img src="/wp-content/uploads/yootheme/cache/photo.jpg" />',
+    '<link href="templates/yootheme/css/theme.css?ver=5.0.52" rel="stylesheet" />',
+    '<meta name="generator" content="YOOtheme Pro 5.0.52" />',
+    '<meta content="YOOtheme Pro v5.0.52" name="generator" />',
+])
+def test_yootheme_5052_is_vulnerable_and_passive(monkeypatch, html):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = YOOTHEME.run({}, _ctx(body=html))
+    _assert_yootheme_passive(transport)
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "yootheme:5.0.52"
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "CVE-2026-102785" in found[0]["evidence"]
+    assert "5.0.53" in found[0]["fix"]
+    assert "wp-content/uploads" in found[0]["fix"]
+    assert "images/" in found[0]["fix"]
+    assert "webshell" in found[0]["fix"].lower()
+    assert YOOTHEME.agent == WORDPRESS.agent == "misconfig"
+
+
+def test_yootheme_5053_is_patched_and_4x_is_not_affected(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    patched = '<link rel="stylesheet" href="/wp-content/themes/yootheme/css/theme.css?ver=5.0.53" />'
+    assert YOOTHEME.run({}, _ctx(body=patched)) == []
+    older = '<link href="/templates/yootheme/js/theme.js?ver=4.5.28" />'
+    assert YOOTHEME.run({}, _ctx(body=older)) == []
+    _assert_yootheme_passive(transport)
+    assert all(call[0] != "POST" for call in transport.calls)
+
+
+def test_yootheme_without_version_is_info(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = (
+        '<link rel="stylesheet" href="/wp-content/themes/yootheme/css/theme.css" />'
+        '<script src="/wp-content/themes/yootheme/js/uikit.min.js?ver=3.21.6"></script>'
+    )
+    found = YOOTHEME.run({}, _ctx(body=html))
+    _assert_yootheme_passive(transport)
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "yootheme:unknown"
+    assert UNCONFIRMED not in found[0]["title"]
+    meta = YOOTHEME.run({}, _ctx(body='<meta name="generator" content="YOOtheme Pro" />'))
+    assert meta[0]["severity"] == "info"
+
+
+def test_yootheme_absent_from_other_html_has_no_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = (
+        '<meta name="generator" content="WordPress 5.0.52" />'
+        '<script src="/wp-includes/js/jquery.js?ver=5.0.52"></script>'
+    )
+    assert YOOTHEME.run({}, _ctx(body=html)) == []
+    assert YOOTHEME.run({}, _ctx(body="<html><p>juice shop</p></html>")) == []
+    _assert_yootheme_passive(transport)
+
+
+def test_yootheme_page_get_drops_the_query_string():
+    from agents.cve_checks.client import page_url
+    ctx = _ctx(body="")
+    ctx.url = "http://127.0.0.1:8081/index.php?ver=5.0.52"
+    ctx.recon_root = {**ctx.recon_root, "url": ctx.url, "body_snippet": ""}
+    assert page_url(ctx) == "http://127.0.0.1:8081/index.php"
+    assert "?" not in page_url(ctx)
+
+
+def test_yootheme_missing_html_is_one_page_get_and_never_the_image_handler(monkeypatch):
+    transport = Transport()
+    transport.routes["/"] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": '<link rel="stylesheet" href="/wp-content/themes/yootheme/css/theme.css?ver=5.0.52" />',
+    }
+    transport.routes["/wp-content/uploads/yootheme/cache/photo.jpg"] = {
+        "status": 200, "body": "image",
+    }
+    transport.routes["/index.php"] = {"status": 200, "body": "handler"}
+    _install(monkeypatch, transport)
+    found = YOOTHEME.run({}, _ctx(body=""))
+    assert [call[0] for call in transport.calls] == ["GET"]
+    assert [call[1] for call in transport.calls] == ["/"]
+    _assert_yootheme_passive(transport)
+    assert found[0]["severity"] == "critical"
+    assert "5.0.52" in found[0]["title"]
+
+    transport.calls.clear()
+    ctx = _ctx(body="")
+    ctx.url = "http://127.0.0.1:8081/wp-content/uploads/yootheme/cache/photo.jpg"
+    ctx.recon_root = {**ctx.recon_root, "url": ctx.url, "body_snippet": ""}
+    assert YOOTHEME.run({}, ctx) == []
+    assert transport.calls == []
+
+
+def test_verifier_confirms_yootheme_then_rejects_a_patched_build():
+    html = '<meta name="generator" content="YOOtheme Pro 5.0.52" />'
+    found = YOOTHEME.run({}, _ctx(body=html))[0]
+    fresh = {
+        "url": "http://127.0.0.1:8081",
+        "raw_headers": {},
+        "body_snippet": html,
+        "server": "",
+    }
+    ok, verdict, _note = verifier._verify_deterministic(
+        found, fresh, fresh["raw_headers"], [], fresh["url"], None,
+    )
+    assert ok and verdict == "confirmed"
+    fresh["body_snippet"] = (
+        '<link rel="stylesheet" href="/wp-content/themes/yootheme/css/theme.css?ver=5.0.53" />'
+    )
+    ok, verdict, _note = verifier._verify_deterministic(
+        found, fresh, fresh["raw_headers"], [], fresh["url"], None,
+    )
+    assert not ok and verdict == "rejected"
 
 
 # --- dependency pins --------------------------------------------------------
