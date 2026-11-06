@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 
 from . import (
+    btcpay,
     dependency_files,
     langflow,
     magento,
@@ -31,6 +32,7 @@ CHECKS: tuple[CveCheck, ...] = (
     magento.CHECK,
     yootheme.CHECK,
     mlflow_gateway.CHECK,
+    btcpay.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
