@@ -25,6 +25,7 @@ from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
+from agents.cve_checks.btcpay import CHECK as BTCPAY
 import planner
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1168,6 +1169,260 @@ def test_foreign_body_and_put_never_reach_the_socket(monkeypatch):
         recon._do("http://127.0.0.1/api", method="PUT")
     with pytest.raises(ValueError):
         recon._do("http://127.0.0.1/api", method="DELETE")
+
+
+# --- BTCPay Server (CVE-2026-119757) ----------------------------------------
+
+_FORBIDDEN = (
+    "macaroon",
+    "/api/v1",
+    "/lnd",
+)
+
+
+def _btcpay_html(version=None, *, assets=True, footer=True, extra=""):
+    links = ""
+    if assets:
+        links = (
+            '<link href="/main/site.css?v=abc" rel="stylesheet" />'
+            '<link href="/main/layout.css?v=def" rel="stylesheet" />'
+            '<link href="/main/fonts/OpenSans.css?v=ghi" rel="stylesheet" />'
+        )
+    ver = ""
+    if version:
+        ver = f'<div class="text-center">\u00a9 BTCPay Server v{version}</div>'
+    foot = ""
+    if footer:
+        foot = f'<footer class="btcpay-footer d-print-none">{ver}</footer>'
+    elif ver:
+        foot = ver
+    return f"<html><head>{links}</head><body>{foot}{extra}</body></html>"
+
+
+def _record(transport):
+    seen = []
+    original = transport.fetch
+
+    def fetch(url, session=None, max_bytes=65536, follow=False):
+        seen.append((url, session, follow, max_bytes))
+        return original(url, session=session, max_bytes=max_bytes, follow=follow)
+
+    transport.fetch = fetch
+    return seen
+
+
+def _assert_btcpay_passive(transport, seen):
+    assert len(seen) <= 1
+    assert len(transport.calls) <= 1
+    for url, session, follow, _max in seen:
+        assert session is None and follow is False
+        assert "?" not in url
+        blob = url.lower()
+        for banned in _FORBIDDEN:
+            assert banned not in blob
+    for method, path, session, follow in transport.calls:
+        assert method == "GET"
+        assert session is None and follow is False
+        blob = path.lower()
+        for banned in _FORBIDDEN:
+            assert banned not in blob
+
+
+@pytest.mark.parametrize("numeric,prerelease,kind", [
+    ((2, 4, 1), None, "affected"),
+    ((2, 4, 0), None, "affected"),
+    ((1, 13, 1), None, "affected"),
+    ((1, 0, 5, 7), None, "affected"),
+    ((2, 4, 2), None, "patched"),
+    ((2, 4, 7), None, "patched"),
+    ((2, 4, 2), "rc1", "affected"),
+    ((2, 4, 2), "rc2", "affected"),
+    ((2, 4, 2), "rc.1", "affected"),
+    ((2, 4, 0), "rc3", "affected"),
+    ((2, 4, 1), "rc1", "affected"),
+    ((2, 4, 3), "rc1", "patched"),
+    ((2, 4), None, "ambiguous"),
+    ((2, 4, 2, 1), None, "ambiguous"),
+])
+def test_btcpay_version_matrix(numeric, prerelease, kind):
+    from agents.cve_checks.btcpay import classify
+    assert classify(numeric, prerelease) == kind
+
+
+@pytest.mark.parametrize("version", ["2.4.1", "2.4.1+fbf761f", "1.13.1", "1.0.5.7"])
+def test_btcpay_affected_footer_is_critical_and_passive(monkeypatch, version):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = BTCPAY.run({}, _ctx(body=_btcpay_html(version)))
+    _assert_btcpay_passive(transport, [])
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["layer"] == "surface"
+    assert found[0]["check"]["id"] == "btcpay-server"
+    label = version.split("+", 1)[0]
+    assert found[0]["check"]["match"] == f"btcpay:{label}"
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "CVE-2026-119757" in found[0]["evidence"]
+    assert "2.4.2" in found[0]["fix"]
+    assert "KEV" not in json.dumps(found)
+    assert "CISA" not in json.dumps(found)
+    assert BTCPAY.agent == "secrets"
+
+
+@pytest.mark.parametrize("version", ["2.4.2", "2.4.2+fbf761f", "2.4.7", "2.4.3-rc1"])
+def test_btcpay_patched_footer_is_clean(monkeypatch, version):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert BTCPAY.run({}, _ctx(body=_btcpay_html(version))) == []
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("version,label", [
+    ("2.4.2-rc1", "2.4.2-rc1"),
+    ("2.4.2-rc2+abc", "2.4.2-rc2"),
+    ("2.4.2-rc.1", "2.4.2-rc.1"),
+    ("2.4.0-rc3", "2.4.0-rc3"),
+])
+def test_btcpay_prerelease_cases(monkeypatch, version, label):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = BTCPAY.run({}, _ctx(body=_btcpay_html(version)))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == f"btcpay:{label}"
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    if label.startswith("2.4.2-"):
+        assert "release candidates are affected" in found[0]["evidence"]
+
+
+def test_btcpay_branding_without_version_is_info(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = _btcpay_html(
+        extra='<script src="/vendor/jquery/jquery.min.js?ver=2.4.1"></script>',
+    )
+    found = BTCPAY.run({}, _ctx(body=html))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "btcpay:unknown"
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "2.4.1" not in found[0]["title"]
+    checkout = (
+        '<link href="/checkout/checkout.css?v=abc" rel="stylesheet" />'
+        '<link href="/main/site.css?v=abc" rel="stylesheet" />'
+        '<link href="/main/layout.css?v=def" rel="stylesheet" />'
+    )
+    assert BTCPAY.run({}, _ctx(body=checkout))[0]["severity"] == "info"
+    copied = _btcpay_html(footer=False, assets=False, extra="&copy; BTCPay Server v2.4")
+    ambiguous = BTCPAY.run({}, _ctx(body=copied))
+    assert ambiguous[0]["severity"] == "info"
+    assert ambiguous[0]["check"]["match"] == "btcpay:unknown"
+
+
+def test_btcpay_non_product_html_is_not_a_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = (
+        "<html><body><p>Security Advisory: BTCPay Server before 2.4.2, "
+        "including 2.4.2 release candidates. LND 0.21.1. Bootstrap 5.3.2.</p>"
+        '<script src="/js/app.js?ver=2.4.1"></script>'
+        '<a href="https://blog.btcpayserver.org/security-advisory-btcpay-server-2-4-2/">advisory</a>'
+        '<link href="/main/site.css?v=2.4.1" rel="stylesheet" />'
+        "</body></html>"
+    )
+    assert BTCPAY.run({}, _ctx(body=html)) == []
+    assert BTCPAY.run({}, _ctx(body="<html><p>juice shop</p></html>")) == []
+    assert transport.calls == []
+
+
+def test_btcpay_cached_html_does_not_fetch_linked_paths(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = _btcpay_html(
+        "2.4.1",
+        extra='<a href="/admin.macaroon">no</a><a href="/api/v1/server/info">no</a>',
+    )
+    ctx = _ctx(body=html)
+    ctx.session = {"cookie": "do-not-send"}
+    found = BTCPAY.run({}, ctx)
+    assert transport.calls == []
+    assert found[0]["severity"] == "critical"
+    assert "macaroon" not in json.dumps(found).lower()
+
+
+def test_btcpay_cache_miss_is_one_query_free_get(monkeypatch):
+    transport = Transport()
+    seen = _record(transport)
+    transport.routes["/login"] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _btcpay_html("2.4.1"),
+    }
+    transport.routes["/admin.macaroon"] = {"status": 200, "body": "secret"}
+    transport.routes["/api/v1/server/info"] = {"status": 200, "body": "{}"}
+    _install(monkeypatch, transport)
+    ctx = _ctx(body="")
+    ctx.url = "http://127.0.0.1:8081/login?return=/admin.macaroon"
+    ctx.recon_root = {**ctx.recon_root, "url": ctx.url, "body_snippet": ""}
+    ctx.session = {"cookie": "do-not-send"}
+    found = BTCPAY.run({}, ctx)
+    assert [url for url, _session, _follow, _max in seen] == ["http://127.0.0.1:8081/login"]
+    _assert_btcpay_passive(transport, seen)
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "btcpay:2.4.1"
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:8081/admin.macaroon",
+    "http://127.0.0.1:8081/data/Admin.Macaroon",
+    "http://127.0.0.1:8081/files/%6dacaroon",
+    "http://127.0.0.1:8081/files/%256dacaroon",
+    "http://127.0.0.1:8081/api/v1/server/info",
+    "http://127.0.0.1:8081/lnd/v1/getinfo",
+])
+def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
+    transport = Transport()
+    seen = _record(transport)
+    _install(monkeypatch, transport)
+    ctx = _ctx(body="")
+    ctx.url = url
+    ctx.recon_root = {**ctx.recon_root, "url": url, "body_snippet": ""}
+    assert BTCPAY.run({}, ctx) == []
+    assert seen == []
+    assert transport.calls == []
+
+
+def test_btcpay_registry_keeps_existing_checks():
+    ids = [check.id for check in CHECKS]
+    assert ids[-1] == "btcpay-server"
+    for required in ("php2shell", "wordpress-core", "yootheme-pro", "mlflow"):
+        assert required in ids
+    assert BTCPAY.agent == "secrets"
+
+
+def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
+    html = _btcpay_html("2.4.1")
+    found = BTCPAY.run({}, _ctx(body=html))[0]
+    fresh = {
+        "url": "http://127.0.0.1:8081",
+        "raw_headers": {},
+        "body_snippet": html,
+        "server": "",
+    }
+    ok, verdict, _note = verifier._verify_deterministic(
+        found, fresh, fresh["raw_headers"], [], fresh["url"], None,
+    )
+    assert ok and verdict == "confirmed"
+    fresh["body_snippet"] = _btcpay_html("2.4.2")
+    ok, verdict, _note = verifier._verify_deterministic(
+        found, fresh, fresh["raw_headers"], [], fresh["url"], None,
+    )
+    assert not ok and verdict == "rejected"
 
 
 def test_brotli_post_does_not_follow_a_redirect(monkeypatch):
