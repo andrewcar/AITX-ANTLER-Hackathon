@@ -23,6 +23,7 @@ from agents.cve_checks.langflow import CHECK as LANGFLOW
 from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.wedevs import CHECK as WEDEVS
+from agents.cve_checks.masteriyo import CHECK as MASTERIYO
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
 import planner
@@ -441,6 +442,113 @@ def test_wedevs_tag_boundary(monkeypatch, tag, critical):
     found = WEDEVS.run({}, _ctx())
     assert bool(_critical(found)) is critical
     assert any("does not answer without login" in item["title"] for item in found)
+
+
+# --- Masteriyo LMS ----------------------------------------------------------
+
+MASTERIYO_README = "/wp-content/plugins/learning-management-system/readme.txt"
+
+
+def _masteriyo_readme(tag=None):
+    lines = [
+        "=== Masteriyo LMS ===",
+        "Contributors: Masteriyo, themeisle",
+        "Requires at least: 6.6",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_masteriyo_one_get(transport):
+    assert transport.calls == [("GET", MASTERIYO_README, None, False)]
+
+
+@pytest.mark.parametrize("tag,critical", [
+    ("2.3.2", True),
+    ("2.3.1", True),
+    ("2.3", True),
+    ("1.0.0", True),
+    ("2.3.3", False),
+    ("2.3.10", False),
+    ("3.5.1", False),
+])
+def test_masteriyo_stable_tag_range(monkeypatch, tag, critical):
+    transport = Transport()
+    transport.routes[MASTERIYO_README] = {
+        "status": 200, "content_type": "text/plain", "body": _masteriyo_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = MASTERIYO.run({}, _ctx())
+    _assert_masteriyo_one_get(transport)
+    if critical:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert found[0]["check"]["match"] == f"masteriyo:{tag}"
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert "CVE-2026-73996" in found[0]["evidence"]
+        assert "2.3.3" in found[0]["fix"]
+        assert "CISA" not in found[0]["title"]
+        assert "CISA" not in found[0]["evidence"]
+        assert "actively exploited" not in found[0]["title"].lower()
+        blob = json.dumps(found)
+        assert "<?php" not in blob
+        assert "proven" not in blob.lower()
+    else:
+        assert found == []
+
+
+def test_masteriyo_232_request_budget_is_exactly_one_get(monkeypatch):
+    transport = Transport()
+    transport.routes[MASTERIYO_README] = {
+        "status": 200, "content_type": "text/plain", "body": _masteriyo_readme("2.3.2"),
+    }
+    _install(monkeypatch, transport)
+    found = MASTERIYO.run({}, _ctx())
+    _assert_masteriyo_one_get(transport)
+    assert found[0]["severity"] == "critical"
+    text = (ROOT / "agents" / "cve_checks" / "masteriyo.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    for banned in ("/wp-admin", "admin-ajax", "async-upload", "<?php", "php://", "../", "multipart"):
+        assert banned not in text
+
+
+@pytest.mark.parametrize("status,body", [
+    (404, ""),
+    (200, "<!doctype html><html><head><title>Masteriyo</title></head><body>Stable tag: 2.3.2</body></html>"),
+    (200, "<html><body><p>Masteriyo LMS Stable tag: 2.3.2</p></body></html>"),
+    (200, "=== Some Other Plugin ===\nContributors: someone\nStable tag: 2.3.2\n"),
+    (200, "Masteriyo is mentioned here.\nStable tag: 2.3.2\n"),
+])
+def test_masteriyo_missing_or_non_plugin_content_is_clean(monkeypatch, status, body):
+    transport = Transport()
+    transport.routes[MASTERIYO_README] = {
+        "status": status, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert MASTERIYO.run({}, _ctx()) == []
+    _assert_masteriyo_one_get(transport)
+
+
+def test_masteriyo_readme_without_stable_tag_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[MASTERIYO_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _masteriyo_readme(None),
+    }
+    _install(monkeypatch, transport)
+    found = MASTERIYO.run({}, _ctx())
+    _assert_masteriyo_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "masteriyo:unknown"
+    assert "CVE-2026-73996" in found[0]["evidence"]
+    assert UNCONFIRMED not in found[0]["title"]
 
 
 # --- Node-RED ---------------------------------------------------------------

@@ -14,6 +14,7 @@ from . import (
     wedevs,
     wordpress,
     yootheme,
+    masteriyo,
 )
 from .spec import CveCheck
 
@@ -31,6 +32,7 @@ CHECKS: tuple[CveCheck, ...] = (
     magento.CHECK,
     yootheme.CHECK,
     mlflow_gateway.CHECK,
+    masteriyo.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
