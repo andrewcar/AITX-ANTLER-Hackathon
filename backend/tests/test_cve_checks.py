@@ -33,8 +33,9 @@ BANNED = (
     "phpinfo",
     "update-core",
     "upgrade.php",
-    "/wp-content/upgrade",
     "/wp-admin/includes",
+    "setup-config.php",
+    "install.php",
 )
 
 
@@ -79,9 +80,10 @@ class Transport:
         self.post_type = "application/json"
 
     def fetch(self, url, session=None, max_bytes=65536, follow=False):
-        path = urlparse(url).path
+        parsed = urlparse(url)
+        path = parsed.path + (("?" + parsed.query) if parsed.query else "")
         self.calls.append(("GET", path, session, follow))
-        spec = self.routes.get(path, {})
+        spec = self.routes.get(path) or self.routes.get(parsed.path) or {}
         body = spec.get("body", "")
         headers = spec.get("headers") or {}
         ctype = spec.get("content_type", headers.get("content-type", "text/plain"))
@@ -498,45 +500,110 @@ def test_nodered_html_shell_is_not_the_editor(monkeypatch):
     assert all(call[0] == "GET" for call in transport.calls)
 
 
-# --- WordPress --------------------------------------------------------------
+# --- WordPress (CVE-2026-119977) --------------------------------------------
 
 @pytest.mark.parametrize("version,vulnerable", [
-    ("4.6.9", False), ("4.7", True), ("4.7.0", True), ("5.0", True),
-    ("6.4.2", True), ("7.1.3", True), ("7.1.4", False), ("7.2.0", False), ("8.0", False),
+    ("4.6.9", False),
+    ("4.7", True), ("4.7.0", True), ("4.7.38", True), ("4.7.39", False),
+    ("5.0", True), ("6.4.2", True), ("6.5.13", True), ("6.5.14", False),
+    ("6.8.11", True), ("6.8.12", False), ("6.9.10", True), ("6.9.11", False),
+    ("7.0.7", True), ("7.0.8", False),
+    ("7.1.3", True), ("7.1.4", False), ("7.2.0", False), ("8.0", False),
 ])
-def test_wordpress_range(version, vulnerable):
+def test_wordpress_branch_floors(version, vulnerable):
     from agents.cve_checks.versions import parse_dotted
-    from agents.cve_checks.wordpress import in_range
-    assert in_range(parse_dotted(version)) is vulnerable
+    from agents.cve_checks.wordpress import is_vulnerable
+    assert is_vulnerable(parse_dotted(version)) is vulnerable
 
 
-def test_wordpress_generator_is_passive_and_actively_exploited(monkeypatch):
+def test_wordpress_generator_713_reports_cve(monkeypatch):
     transport = Transport()
     _install(monkeypatch, transport)
-    html = '<meta name="generator" content="WordPress 6.4.2" />'
+    html = '<meta name="generator" content="WordPress 7.1.3" />'
     found = WORDPRESS.run({}, _ctx(body=html))
-    assert transport.calls == []
+    assert [call[1] for call in transport.calls] == ["/wp-content/upgrade/"]
+    assert len(found) == 1
     assert found[0]["severity"] == "critical"
-    assert "actively exploited" in found[0]["title"]
+    assert "CVE-2026-119977" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
     assert UNCONFIRMED in found[0]["evidence"]
     assert "CISA KEV" in found[0]["evidence"]
     assert "7.1.4" in found[0]["fix"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "No exploit payload" in found[0]["evidence"]
 
 
-def test_wordpress_readme_is_the_only_extra_get(monkeypatch):
+def test_wordpress_generator_714_is_fixed(monkeypatch):
     transport = Transport()
-    transport.routes["/readme.html"] = {
+    _install(monkeypatch, transport)
+    html = '<meta name="generator" content="WordPress 7.1.4" />'
+    found = WORDPRESS.run({}, _ctx(body=html))
+    assert [call[1] for call in transport.calls] == ["/wp-content/upgrade/"]
+    assert _critical(found) == []
+    assert all(item.get("check", {}).get("match") != "wordpress:7.1.4" for item in found)
+
+
+def test_wordpress_backport_6812_is_fixed(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = '<meta name="generator" content="WordPress 6.8.12" />'
+    found = WORDPRESS.run({}, _ctx(body=html))
+    assert _critical(found) == []
+    assert all("6.8.12" not in (item.get("check") or {}).get("match", "") or
+               item["severity"] != "critical" for item in found)
+
+
+def test_wordpress_generator_6811_reports_cve(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = '<meta name="generator" content="WordPress 6.8.11" />'
+    found = WORDPRESS.run({}, _ctx(body=html))
+    assert len(_critical(found)) == 1
+    assert found[0]["check"]["match"] == "wordpress:6.8.11"
+    assert "CVE-2026-119977" in found[0]["evidence"]
+    assert "6.8.12" in found[0]["fix"]
+
+
+def test_wordpress_feed_fallback_without_generator(monkeypatch):
+    transport = Transport()
+    transport.routes["/feed/"] = {
         "status": 200,
-        "content_type": "text/html",
-        "body": "<html><title>WordPress &#8250; ReadMe</title><br /> Version 7.1.3</html>",
+        "content_type": "application/rss+xml",
+        "body": "<rss><channel><generator>https://wordpress.org/?v=7.1.2</generator></channel></rss>",
     }
     _install(monkeypatch, transport)
     found = WORDPRESS.run({}, _ctx(body="<html><p>hello</p></html>"))
-    assert [call[1] for call in transport.calls] == ["/readme.html"]
-    assert found and "7.1.3" in found[0]["title"]
-    joined = " ".join(call[1] for call in transport.calls)
-    for banned in ("update-core", "upgrade.php", "/wp-content/upgrade"):
-        assert banned not in joined
+    paths = [call[1] for call in transport.calls]
+    assert paths[0] == "/feed/"
+    assert "/readme.html" not in paths
+    assert "upgrade.php" not in " ".join(paths)
+    assert "update-core" not in " ".join(paths)
+    assert len(_critical(found)) == 1
+    assert "7.1.2" in found[0]["title"]
+    assert "CVE-2026-119977" in found[0]["evidence"]
+
+
+def test_wordpress_upgrade_listing_is_medium_without_exploit_language(monkeypatch):
+    transport = Transport()
+    transport.routes["/wp-content/upgrade/"] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": "<html><head><title>Index of /wp-content/upgrade/</title></head>"
+                "<body><h1>Index of /wp-content/upgrade/</h1>"
+                "<a href=\"/\">Parent Directory</a></body></html>",
+    }
+    _install(monkeypatch, transport)
+    html = '<meta name="generator" content="WordPress 7.1.4" />'
+    found = WORDPRESS.run({}, _ctx(body=html))
+    listing = [item for item in found if item.get("check", {}).get("match") == "wordpress:upgrade-listing"]
+    assert len(listing) == 1
+    assert listing[0]["severity"] == "medium"
+    blob = (listing[0]["title"] + " " + listing[0]["evidence"]).lower()
+    for banned in ("exploit", "rce", "payload", "weaponiz"):
+        assert banned not in blob
+    assert "directory listing" in blob or "listable" in blob
+    assert "No recursion" in listing[0]["evidence"] or "no recursion" in listing[0]["evidence"].lower()
+    assert [call[1] for call in transport.calls] == ["/wp-content/upgrade/"]
 
 
 # --- YOOtheme Pro ----------------------------------------------------------
