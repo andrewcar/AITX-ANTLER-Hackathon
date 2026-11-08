@@ -22,10 +22,14 @@ from agents.cve_checks.nodered import CHECK as NODERED
 from agents.cve_checks.langflow import CHECK as LANGFLOW
 from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
+from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
 import planner
+import main
+import orchestrator
+from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 BANNED = (
@@ -1033,6 +1037,193 @@ def test_magento_marker_without_version_is_info(monkeypatch):
     found = MAGENTO.run({}, _ctx(body='<script type="text/x-magento-init">{}</script>'))
     assert found[0]["severity"] == "info"
     assert UNCONFIRMED not in found[0]["title"]
+
+
+# --- Registration Form for WooCommerce (CVE-2026-119075) --------------------
+
+TGWCFB_README = "/wp-content/plugins/registration-form-for-woocommerce/readme.txt"
+
+
+def _tgwcfb_readme(tag=None, changelog=None):
+    lines = [
+        "=== Registration Form for WooCommerce ===",
+        "Contributors: ThemeGrill",
+        "Requires at least: 5.5",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend(["", "== Changelog =="])
+    if changelog is not None:
+        lines.append(f"= {changelog}       - 06-11-2026 =")
+        lines.append("* Fix - test entry.")
+    elif tag is not None:
+        lines.append(f"= {tag}       - 06-11-2026 =")
+        lines.append("* Fix - test entry.")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_tgwcfb_one_get(transport):
+    assert transport.calls == [("GET", TGWCFB_README, None, False)]
+
+
+@pytest.mark.parametrize("tag,critical", [
+    ("1.1.4", True),
+    ("1.1.3", True),
+    ("1.1", True),
+    ("1.0.0", True),
+    ("1.1.5", False),
+    ("1.1.10", False),
+    ("2.0.0", False),
+])
+def test_tgwcfb_stable_tag_range(monkeypatch, tag, critical):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": 200, "content_type": "text/plain", "body": _tgwcfb_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = TGWCFB.run({}, _ctx())
+    _assert_tgwcfb_one_get(transport)
+    if critical:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert found[0]["check"]["match"] == f"registration-form-woocommerce:{tag}"
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert "CVE-2026-119075" in found[0]["evidence"]
+        assert "lag" in found[0]["evidence"].lower()
+        assert "1.1.5" in found[0]["fix"]
+        assert "administrator" in found[0]["fix"].lower() or "admin" in found[0]["fix"].lower()
+        assert "exploit" not in found[0]["title"].lower()
+        blob = json.dumps(found).lower()
+        assert "proven" not in blob
+        assert "user_roles=administrator" not in blob
+    else:
+        assert found == []
+
+
+def test_tgwcfb_114_request_budget_is_exactly_one_get(monkeypatch):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": 200, "content_type": "text/plain", "body": _tgwcfb_readme("1.1.4"),
+    }
+    _install(monkeypatch, transport)
+    found = TGWCFB.run({}, _ctx())
+    _assert_tgwcfb_one_get(transport)
+    assert found[0]["severity"] == "critical"
+    text = (
+        ROOT / "agents" / "cve_checks" / "registration_form_woocommerce.py"
+    ).read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    for banned in (
+        "woocommerce_after_checkout_validation",
+        "validate_checkout_fields",
+        "FormHandler",
+        "$_POST",
+        "multipart",
+        "<?php",
+        "php://",
+        "../",
+    ):
+        assert banned not in text
+
+
+def test_tgwcfb_changelog_fallback_flags_114(monkeypatch):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _tgwcfb_readme(tag=None, changelog="1.1.4"),
+    }
+    _install(monkeypatch, transport)
+    found = TGWCFB.run({}, _ctx())
+    _assert_tgwcfb_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "registration-form-woocommerce:1.1.4"
+    assert "Changelog" in found[0]["evidence"]
+
+
+@pytest.mark.parametrize("status,body", [
+    (404, ""),
+    (200, "<!doctype html><html><head><title>Registration Form</title></head>"
+          "<body>Stable tag: 1.1.4</body></html>"),
+    (200, "<html><body><p>Registration Form for WooCommerce Stable tag: 1.1.4</p></body></html>"),
+    (200, "=== Some Other Plugin ===\nContributors: someone\nStable tag: 1.1.4\n"),
+    (200, "Registration Form for WooCommerce is mentioned.\nStable tag: 1.1.4\n"),
+    (200, "=== Registration Form for WooCommerce ===\nContributors: ThemeGrill\n"
+          "Requires at least: 5.5\n\n== Changelog ==\n* Fix - no version heading\n"),
+    (200, "not a readme at all\ngarbage\n$$$"),
+])
+def test_tgwcfb_missing_garbage_or_non_plugin_is_not_detected(monkeypatch, status, body):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": status, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert TGWCFB.run({}, _ctx()) == []
+    _assert_tgwcfb_one_get(transport)
+
+
+def test_tgwcfb_fixed_115_is_clean(monkeypatch):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": 200, "content_type": "text/plain", "body": _tgwcfb_readme("1.1.5"),
+    }
+    _install(monkeypatch, transport)
+    assert TGWCFB.run({}, _ctx()) == []
+    _assert_tgwcfb_one_get(transport)
+
+
+def test_tgwcfb_non_allowlisted_host_refused_before_any_request(monkeypatch):
+    opened = []
+
+    def opener(req, timeout=None):
+        opened.append(req.full_url)
+        raise AssertionError("non-allowlisted host opened a socket")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    monkeypatch.setattr(
+        orchestrator, "run_scan",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("run_scan must not run off the allowlist")
+        ),
+    )
+    with pytest.raises(main.ScopeError):
+        main.allowlisted_host("https://example.com/wp/")
+    assert opened == []
+
+    client = TestClient(main.app)
+    login = client.post("/auth/login", json={"email": "erwin@local", "password": "demo"})
+    assert login.status_code == 200
+    token = login.json()["token"]
+    denied = client.post(
+        "/scan",
+        json={"url": "https://example.com/"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert denied.status_code == 403
+    assert "allowlist" in denied.json()["detail"]
+    assert opened == []
+
+
+def test_tgwcfb_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_tgwcfb_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                TGWCFB.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
 
 
 # --- crawler JSON memory ----------------------------------------------------

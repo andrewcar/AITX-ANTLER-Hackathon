@@ -11,6 +11,7 @@ from . import (
     node_brotli,
     nodered,
     php2shell,
+    registration_form_woocommerce,
     wedevs,
     wordpress,
     yootheme,
@@ -31,6 +32,7 @@ CHECKS: tuple[CveCheck, ...] = (
     magento.CHECK,
     yootheme.CHECK,
     mlflow_gateway.CHECK,
+    registration_form_woocommerce.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
