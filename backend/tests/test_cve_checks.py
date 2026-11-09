@@ -23,6 +23,7 @@ from agents.cve_checks.langflow import CHECK as LANGFLOW
 from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
+from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
@@ -176,10 +177,13 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
         assert banned not in blob
     assert paths.count("/settings") == 1
     assert paths.count("/flows") == 1
+    assert paths.count("/storage/v1/version") == 1
     assert "/api/v1/mcp" not in paths
     assert "/api/v1/auto_login" not in paths
     assert "/wp-json/pm/v2" not in paths
     assert "/_next/" not in blob
+    assert "x-amz-copy-source" not in blob.lower()
+    assert "apikey" not in blob.lower()
 
 
 # --- PHP2Shell --------------------------------------------------------------
@@ -992,6 +996,165 @@ def test_mlflow_check_never_uses_another_method(monkeypatch):
     assert text.count("fetch_path(") == 1
     for banned in ("/gateway", "/api/2.0/mlflow/gateway", "api/2.0/endpoints"):
         assert banned not in text
+
+
+# --- Supabase Storage (GHSA-fgvp-cqg6-q8h2 / GHSA-3m3f-pjv4-x2fp) -----------
+
+STORAGE_VERSION = "/storage/v1/version"
+
+
+def _storage_ctx(url="http://127.0.0.1:8081"):
+    return SimpleNamespace(
+        url=url,
+        recon_root={"url": url, "server": "", "raw_headers": {}, "body_snippet": ""},
+        surface={"pages": [], "forms": [], "params": [], "json_endpoints": []},
+        session=None,
+        fingerprint={},
+    )
+
+
+def _assert_one_storage_get(transport):
+    assert transport.calls == [("GET", STORAGE_VERSION, None, False)]
+    assert {call[0] for call in transport.calls} == {"GET"}
+
+
+def test_supabase_storage_1898_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[STORAGE_VERSION] = {"status": 200, "body": "1.89.8\n"}
+    _install(monkeypatch, transport)
+    found = SUPABASE_STORAGE.run({}, _storage_ctx())
+    _assert_one_storage_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["id"] == "supabase-storage"
+    assert found[0]["check"]["match"] == "supabase-storage:1.89.8:primary"
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "GHSA-fgvp-cqg6-q8h2" in found[0]["evidence"]
+    assert "GHSA-3m3f-pjv4-x2fp" in found[0]["evidence"]
+    assert "1.89.10" in found[0]["fix"]
+    assert "role" in found[0]["evidence"]
+    assert "No JWT" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert SUPABASE_STORAGE.agent == "misconfig"
+
+
+def test_supabase_storage_1899_is_sibling_only(monkeypatch):
+    transport = Transport()
+    transport.routes[STORAGE_VERSION] = {"status": 200, "body": "1.89.9"}
+    _install(monkeypatch, transport)
+    found = SUPABASE_STORAGE.run({}, _storage_ctx())
+    _assert_one_storage_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["severity"] != "critical"
+    assert found[0]["check"]["match"] == "supabase-storage:1.89.9:sibling"
+    assert "sibling" in found[0]["title"].lower() or "GHSA-3m3f-pjv4-x2fp" in found[0]["title"]
+    assert "GHSA-3m3f-pjv4-x2fp" in found[0]["evidence"]
+    assert "GHSA-fgvp-cqg6-q8h2 is fixed" in found[0]["evidence"]
+    assert "1.89.10" in found[0]["fix"]
+    assert "x-amz-copy-source" in found[0]["evidence"]
+    assert "No JWT" in found[0]["evidence"]
+
+
+def test_supabase_storage_18910_is_clean(monkeypatch):
+    transport = Transport()
+    transport.routes[STORAGE_VERSION] = {"status": 200, "body": "1.89.10\n"}
+    _install(monkeypatch, transport)
+    assert SUPABASE_STORAGE.run({}, _storage_ctx()) == []
+    _assert_one_storage_get(transport)
+    transport.calls.clear()
+    transport.routes[STORAGE_VERSION] = {"status": 200, "body": "1.90.0"}
+    assert SUPABASE_STORAGE.run({}, _storage_ctx()) == []
+    _assert_one_storage_get(transport)
+
+
+def test_supabase_storage_hosted_supabase_co_is_informational(monkeypatch):
+    transport = Transport()
+    transport.routes[STORAGE_VERSION] = {"status": 200, "body": "1.89.8"}
+    _install(monkeypatch, transport)
+    found = SUPABASE_STORAGE.run(
+        {}, _storage_ctx("https://abcdefgh.supabase.co")
+    )
+    _assert_one_storage_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "supabase-storage:1.89.8:hosted"
+    assert "hosted" in found[0]["evidence"].lower()
+    assert "already patched" in found[0]["evidence"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not-a-version",
+    "<html>1.89.8</html>",
+    '{"version":"1.89.8"}',
+    "Storage API",
+])
+def test_supabase_storage_missing_or_unparseable_version_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[STORAGE_VERSION] = {"status": 200, "body": body}
+    _install(monkeypatch, transport)
+    assert SUPABASE_STORAGE.run({}, _storage_ctx()) == []
+    _assert_one_storage_get(transport)
+
+
+def test_supabase_storage_missing_endpoint_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[STORAGE_VERSION] = {"status": 404, "body": "1.89.8"}
+    _install(monkeypatch, transport)
+    assert SUPABASE_STORAGE.run({}, _storage_ctx()) == []
+    _assert_one_storage_get(transport)
+
+
+def test_supabase_storage_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host("https://storage.attacker.example/storage/v1/version")
+    assert "allowlist" in str(exc.value)
+    with pytest.raises(main.ScopeError):
+        main.allowlisted_host("https://abcdefgh.supabase.co/storage/v1/version")
+
+
+def test_supabase_storage_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_supabase_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                SUPABASE_STORAGE.run({}, _storage_ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_supabase_storage_check_is_get_only_and_never_sends_auth_material(monkeypatch):
+    transport = Transport()
+    transport.routes[STORAGE_VERSION] = {"status": 200, "body": "1.89.7"}
+    _install(monkeypatch, transport)
+    found = SUPABASE_STORAGE.run({}, _storage_ctx())
+    _assert_one_storage_get(transport)
+    assert found and found[0]["severity"] == "critical"
+    text = (ROOT / "agents" / "cve_checks" / "supabase_storage.py").read_text(
+        encoding="utf-8"
+    )
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, VERSION" in text
+    # Probe is a bare GET through client.fetch_path — no custom headers or body.
+    assert "headers=" not in text
+    assert "eyJ" not in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    for banned in ("Authorization:", "apikey:", "x-amz-copy-source:"):
+        assert banned not in text
+    assert "exploit" not in found[0]["title"].lower()
+    assert "No JWT" in found[0]["evidence"]
 
 
 # --- Magento ----------------------------------------------------------------

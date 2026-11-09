@@ -12,6 +12,7 @@ from . import (
     nodered,
     php2shell,
     registration_form_woocommerce,
+    supabase_storage,
     wedevs,
     wordpress,
     yootheme,
@@ -32,6 +33,7 @@ CHECKS: tuple[CveCheck, ...] = (
     magento.CHECK,
     yootheme.CHECK,
     mlflow_gateway.CHECK,
+    supabase_storage.CHECK,
     registration_form_woocommerce.CHECK,
 )
 
