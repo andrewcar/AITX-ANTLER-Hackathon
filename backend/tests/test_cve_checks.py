@@ -22,6 +22,8 @@ from agents.cve_checks.nodered import CHECK as NODERED
 from agents.cve_checks.langflow import CHECK as LANGFLOW
 from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
+from agents.cve_checks.amelia_pro import CHECK as AMELIA_PRO
+from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.wedevs import CHECK as WEDEVS
@@ -40,6 +42,11 @@ BANNED = (
     "upgrade.php",
     "/wp-content/upgrade",
     "/wp-admin/includes",
+    "/wp-json/amelia",
+    "tag[",
+    "tag%5B",
+    "SLEEP(",
+    "BENCHMARK(",
 )
 
 
@@ -178,12 +185,22 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/settings") == 1
     assert paths.count("/flows") == 1
     assert paths.count("/storage/v1/version") == 1
+    assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
+    assert paths.count("/wp-content/uploads/") == 0
     assert "/api/v1/mcp" not in paths
     assert "/api/v1/auto_login" not in paths
     assert "/wp-json/pm/v2" not in paths
     assert "/_next/" not in blob
     assert "x-amz-copy-source" not in blob.lower()
     assert "apikey" not in blob.lower()
+    assert "multipart" not in blob.lower()
+    assert "wpcf7" not in blob.lower()
+    assert all(
+        path == "/wp-content/plugins/ameliabooking/readme.txt"
+        or "ameliabooking" not in path
+        for path in paths
+    )
 
 
 # --- PHP2Shell --------------------------------------------------------------
@@ -1157,6 +1174,228 @@ def test_supabase_storage_check_is_get_only_and_never_sends_auth_material(monkey
     assert "No JWT" in found[0]["evidence"]
 
 
+# --- Contact Form 7 ---------------------------------------------------------
+
+CF7_README = "/wp-content/plugins/contact-form-7/readme.txt"
+CF7_UPLOADS = "/wp-content/uploads/"
+
+
+def _cf7_readme(tag=None):
+    lines = [
+        "=== Contact Form 7 ===",
+        "Contributors: takayukister",
+        "Requires at least: 6.7",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    return "\n".join(lines) + "\n"
+
+
+def _cf7_asset_html(ver=None):
+    if ver is None:
+        return (
+            '<script src="/wp-content/plugins/contact-form-7/includes/js/index.js">'
+            "</script>"
+        )
+    return (
+        f'<link rel="stylesheet" href="/wp-content/plugins/contact-form-7/'
+        f'includes/css/styles.css?ver={ver}" />'
+    )
+
+
+@pytest.mark.parametrize("tag,vulnerable", [
+    ("6.2.3", True),
+    ("6.2", True),
+    ("6.2.0", True),
+    ("6.2.2", True),
+    ("6.2.4", False),
+    ("6.2.4.1", False),
+    ("6.1.9", False),
+    ("6.1", False),
+    ("5.9.8", False),
+    ("6.3.0", False),
+])
+def test_contact_form_7_version_matrix(tag, vulnerable):
+    from agents.cve_checks.contact_form_7 import affected, _parse_version
+    assert affected(_parse_version(tag)) is vulnerable
+
+
+@pytest.mark.parametrize("tag,flagged", [
+    ("6.2.3", True),
+    ("6.2", True),
+    ("6.2.4", False),
+    ("6.2.4.1", False),
+    ("6.1.9", False),
+])
+def test_contact_form_7_readme_stable_tag(monkeypatch, tag, flagged):
+    transport = Transport()
+    transport.routes[CF7_README] = {
+        "status": 200, "content_type": "text/plain", "body": _cf7_readme(tag),
+    }
+    transport.routes[CF7_UPLOADS] = {"status": 403, "body": "Forbidden"}
+    _install(monkeypatch, transport)
+    found = CONTACT_FORM_7.run({}, _ctx())
+    assert {call[0] for call in transport.calls} == {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "high"
+        assert found[0]["check"]["match"] == f"contact-form-7:{tag}"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-114432" in found[0]["evidence"]
+        assert "6.2.4" in found[0]["fix"]
+        assert "directory listing" in found[0]["fix"].lower()
+        assert ".phar" in found[0]["fix"]
+        assert "exploit" not in found[0]["title"].lower()
+        assert "exploit" not in found[0]["evidence"].lower()
+        paths = [call[1] for call in transport.calls]
+        assert paths == [CF7_README, CF7_UPLOADS]
+    else:
+        assert found == []
+        assert [call[1] for call in transport.calls] == [CF7_README]
+
+
+def test_contact_form_7_asset_ver_622_is_flagged(monkeypatch):
+    transport = Transport()
+    transport.routes[CF7_UPLOADS] = {"status": 403, "body": "Forbidden"}
+    _install(monkeypatch, transport)
+    found = CONTACT_FORM_7.run({}, _ctx(body=_cf7_asset_html("6.2.2")))
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "contact-form-7:6.2.2"
+    assert [call[1] for call in transport.calls] == [CF7_UPLOADS]
+    assert {call[0] for call in transport.calls} == {"GET"}
+
+
+def test_contact_form_7_autoindex_uploads_raises_to_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[CF7_README] = {
+        "status": 200, "content_type": "text/plain", "body": _cf7_readme("6.2.3"),
+    }
+    transport.routes[CF7_UPLOADS] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": "<html><head><title>Index of /wp-content/uploads</title></head>"
+                "<body><h1>Index of /wp-content/uploads</h1></body></html>",
+    }
+    _install(monkeypatch, transport)
+    found = CONTACT_FORM_7.run({}, _ctx())
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "contact-form-7:6.2.3:autoindex"
+    assert "Index of" in found[0]["evidence"] or "autoindex" in found[0]["evidence"].lower()
+    assert "file-listing" in found[0]["evidence"].lower() or "file listing" in found[0]["evidence"].lower()
+    assert "RCE" in found[0]["evidence"]
+    assert [call[1] for call in transport.calls] == [CF7_README, CF7_UPLOADS]
+    assert {call[0] for call in transport.calls} == {"GET"}
+
+
+def test_contact_form_7_uploads_403_does_not_raise(monkeypatch):
+    transport = Transport()
+    transport.routes[CF7_README] = {
+        "status": 200, "content_type": "text/plain", "body": _cf7_readme("6.2.3"),
+    }
+    transport.routes[CF7_UPLOADS] = {"status": 403, "body": "Forbidden"}
+    _install(monkeypatch, transport)
+    found = CONTACT_FORM_7.run({}, _ctx())
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "contact-form-7:6.2.3"
+    assert "autoindex" not in found[0]["check"]["match"]
+
+
+def test_contact_form_7_linked_wpcf7_uploads_autoindex(monkeypatch):
+    html = (
+        _cf7_asset_html("6.2.1")
+        + '<a href="/wp-content/uploads/wpcf7_uploads/">files</a>'
+    )
+    listing = "/wp-content/uploads/wpcf7_uploads/"
+    transport = Transport()
+    transport.routes[listing] = {
+        "status": 200,
+        "body": "<title>Index of /wp-content/uploads/wpcf7_uploads</title>"
+                "<h1>Index of /wp-content/uploads/wpcf7_uploads</h1>",
+    }
+    _install(monkeypatch, transport)
+    found = CONTACT_FORM_7.run({}, _ctx(body=html))
+    assert found[0]["severity"] == "critical"
+    assert [call[1] for call in transport.calls] == [listing]
+    assert CF7_UPLOADS not in [call[1] for call in transport.calls]
+
+
+def test_contact_form_7_missing_readme_with_asset_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[CF7_README] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    found = CONTACT_FORM_7.run({}, _ctx(body=_cf7_asset_html(None)))
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "contact-form-7:unknown"
+    assert UNCONFIRMED not in found[0]["title"]
+    assert [call[1] for call in transport.calls] == [CF7_README]
+    assert CF7_UPLOADS not in [call[1] for call in transport.calls]
+
+
+def test_contact_form_7_missing_readme_without_plugin_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[CF7_README] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    assert CONTACT_FORM_7.run({}, _ctx(body="<html><p>hello</p></html>")) == []
+    assert [call[1] for call in transport.calls] == [CF7_README]
+
+
+def test_contact_form_7_readme_without_stable_tag_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[CF7_README] = {
+        "status": 200, "content_type": "text/plain", "body": _cf7_readme(None),
+    }
+    _install(monkeypatch, transport)
+    found = CONTACT_FORM_7.run({}, _ctx())
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "contact-form-7:unknown"
+    assert [call[1] for call in transport.calls] == [CF7_README]
+
+
+def test_contact_form_7_only_issues_get_requests(monkeypatch):
+    transport = Transport()
+    transport.routes[CF7_README] = {
+        "status": 200, "content_type": "text/plain", "body": _cf7_readme("6.2.3"),
+    }
+    transport.routes[CF7_UPLOADS] = {
+        "status": 200,
+        "body": "<h1>Index of /wp-content/uploads</h1>",
+    }
+    _install(monkeypatch, transport)
+    found = CONTACT_FORM_7.run({}, _ctx())
+    assert found and found[0]["severity"] == "critical"
+    assert {call[0] for call in transport.calls} == {"GET"}
+    assert all(call[2] is None for call in transport.calls)
+    text = (ROOT / "agents" / "cve_checks" / "contact_form_7.py").read_text(
+        encoding="utf-8"
+    )
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    for banned in (
+        "multipart",
+        "$_POST",
+        "php://",
+        "<?php",
+        "admin-ajax",
+        "async-upload",
+        "invalid-utf",
+        "\udcff",
+    ):
+        assert banned not in text
+    blob = json.dumps(found).lower()
+    assert "exploit" not in blob
+    assert "attack payload" not in blob
+
+
+def test_contact_form_7_agent_is_misconfig():
+    assert CONTACT_FORM_7.agent == "misconfig"
+    assert CONTACT_FORM_7.id == "contact-form-7"
+    assert CONTACT_FORM_7.cve == "CVE-2026-114432"
+
+
 # --- Magento ----------------------------------------------------------------
 
 @pytest.mark.parametrize("version,vulnerable", [
@@ -1535,3 +1774,169 @@ def test_brotli_post_does_not_follow_a_redirect(monkeypatch):
     result = recon.post_brotli_json("http://127.0.0.1/api/items")
     assert result["status"] == 302
     assert calls == ["http://127.0.0.1/api/items"]
+
+
+# --- Amelia Pro (CVE-2026-116751) -------------------------------------------
+
+AMELIA_README = "/wp-content/plugins/ameliabooking/readme.txt"
+_AMELIA_EVENT_PATHS = (
+    "/wp-admin/admin-ajax.php",
+    "/wp-json/amelia/v1",
+    "/wp-json/amelia",
+)
+
+
+def _amelia_asset_html(version: str) -> str:
+    return (
+        f'<script src="/wp-content/plugins/ameliabooking/v3/public/assets/'
+        f'public.js?ver={version}"></script>'
+        f'<link rel="stylesheet" href="/wp-content/plugins/ameliabooking/'
+        f'v3/public/assets/style.css?ver={version}" />'
+    )
+
+
+def _amelia_readme(stable: str, *, lite: bool = False) -> str:
+    edition = "Amelia Lite WordPress Booking Plugin" if lite else "Amelia Booking Plugin"
+    return (
+        "=== Booking for Appointments and Events Calendar - Amelia ===\n"
+        f"Stable tag: {stable}\n\n"
+        f"**{edition}** is an appointment booking system.\n"
+        "Donate link: https://wpamelia.com/\n"
+    )
+
+
+def _assert_amelia_static_gets_only(transport):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths).lower()
+    for banned in _AMELIA_EVENT_PATHS + ("tag[", "tag%5b", "sleep(", "benchmark(", "select "):
+        assert banned.lower() not in blob
+    for path in paths:
+        assert path == AMELIA_README or not path.startswith("/wp-content/plugins/ameliabooking/")
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("9.9.1", True), ("9.9.2", False), ("9.9.3", False),
+    ("4.0", True), ("4.0.0", True), ("3.9.9", False), ("3.0", False),
+    ("2.4.14", False), ("1.2.38", False), ("10.0.0", False),
+])
+def test_amelia_pro_version_matrix(version, vulnerable):
+    from agents.cve_checks.amelia_pro import in_range, is_commercial_pro
+    from agents.cve_checks.versions import parse_dotted
+    parsed = parse_dotted(version)
+    assert bool(is_commercial_pro(parsed) and in_range(parsed)) is vulnerable
+
+
+def test_amelia_pro_991_asset_is_critical_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = AMELIA_PRO.run({}, _ctx(body=_amelia_asset_html("9.9.1")))
+    assert transport.calls == []
+    assert AMELIA_PRO.agent == "misconfig"
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "amelia-pro:9.9.1"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-116751" in found[0]["title"]
+    assert "9.9.2" in found[0]["fix"]
+    assert "licensed update channel" in found[0]["fix"].lower()
+    assert "exploit" not in found[0]["title"].lower()
+    assert "No event-filter request" in found[0]["evidence"]
+    assert "not CISA KEV" in found[0]["evidence"]
+
+
+def test_amelia_pro_40_asset_is_critical(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = AMELIA_PRO.run({}, _ctx(body=_amelia_asset_html("4.0")))
+    assert transport.calls == []
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "amelia-pro:4.0.0"
+
+
+def test_amelia_pro_992_and_3x_are_not_flagged(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert AMELIA_PRO.run({}, _ctx(body=_amelia_asset_html("9.9.2"))) == []
+    assert AMELIA_PRO.run({}, _ctx(body=_amelia_asset_html("3.5.0"))) == []
+    assert transport.calls == []
+
+
+def test_amelia_lite_asset_never_yields_vulnerable(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = AMELIA_PRO.run({}, _ctx(body=_amelia_asset_html("2.4.14")))
+    assert transport.calls == []
+    assert found == []
+    assert _critical(found) == []
+
+
+def test_amelia_lite_readme_never_yields_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[AMELIA_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _amelia_readme("2.4.14", lite=True),
+    }
+    _install(monkeypatch, transport)
+    found = AMELIA_PRO.run({}, _ctx())
+    _assert_amelia_static_gets_only(transport)
+    assert [call[1] for call in transport.calls] == [AMELIA_README]
+    assert found == []
+    assert _critical(found) == []
+
+
+def test_amelia_unknown_edition_is_informational(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = (
+        '<script src="/wp-content/plugins/ameliabooking/v3/public/assets/public.js">'
+        "</script>"
+    )
+    found = AMELIA_PRO.run({}, _ctx(body=html))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "amelia-pro:unknown"
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "verify Pro version is 9.9.2 or later" in found[0]["title"]
+
+
+def test_amelia_pro_readme_stable_tag_is_one_static_get(monkeypatch):
+    transport = Transport()
+    transport.routes[AMELIA_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _amelia_readme("9.9.1", lite=False),
+    }
+    _install(monkeypatch, transport)
+    found = AMELIA_PRO.run({}, _ctx())
+    _assert_amelia_static_gets_only(transport)
+    assert [call[1] for call in transport.calls] == [AMELIA_README]
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "amelia-pro:9.9.1"
+
+
+def test_amelia_absent_has_no_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[AMELIA_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert AMELIA_PRO.run({}, _ctx(body="<html><body>hello</body></html>")) == []
+    assert [call[1] for call in transport.calls] == [AMELIA_README]
+
+
+def test_amelia_check_source_is_get_only_static_fingerprint():
+    text = (ROOT / "agents" / "cve_checks" / "amelia_pro.py").read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "admin-ajax" not in text.lower()
+    assert "tag[" not in text
+    assert "SLEEP(" not in text
+    assert "BENCHMARK(" not in text
+    assert "Never requests Amelia event-filter" in text
+    assert AMELIA_PRO.agent == "misconfig"
