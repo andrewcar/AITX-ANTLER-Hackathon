@@ -2,6 +2,8 @@
 from types import SimpleNamespace
 
 from . import (
+    amelia_pro,
+    contact_form_7,
     dependency_files,
     langflow,
     magento,
@@ -11,6 +13,7 @@ from . import (
     node_brotli,
     nodered,
     php2shell,
+    supabase_storage,
     wedevs,
     wordpress,
     yootheme,
@@ -31,6 +34,9 @@ CHECKS: tuple[CveCheck, ...] = (
     magento.CHECK,
     yootheme.CHECK,
     mlflow_gateway.CHECK,
+    supabase_storage.CHECK,
+    amelia_pro.CHECK,
+    contact_form_7.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]

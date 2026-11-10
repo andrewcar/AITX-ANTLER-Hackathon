@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (75 test functions).
+- **Tests:** `pytest` (213 test functions).
 
 ## Architecture
 
@@ -80,8 +80,11 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | `metabase` (recon) | CVE-2026-72898 (CVSS 10, KEV) | One GET `/api/session/properties`. Critical below 0.58.24 / 0.59.21 / 0.60.17 / 0.61.11 / 0.62.9 / 0.63.5 on that branch. | Never requests the password-reset route. No POST, no session token, no exploit payload. |
 | `langflow` (auth) | CVE-2026-93680 / CVE-2026-110186 | GET `/api/v1/version`. Critical below 1.13.0. When the body is Langflow, GET `/api/v1/mcp` and GET `/api/v1/auto_login` and note whether tools are listed without login and whether auto-login answers. | Never uses a returned token, never runs a flow, no POST. The token is not copied into the finding. |
 | `mlflow` (misconfig) | CVE-2026-4035 | One GET `/version`. High below 3.11.0 when that response has no auth challenge (suggests no basic-auth). Medium when basic-auth challenges, using the MLflow UI title or `/static-files` assets the crawl already stored if `/version` itself is only the challenge. | No POST, PUT, PATCH, or DELETE. No gateway route or secret create, modify, or list. No completion call. No `$ENV_VAR` string, credential, or external callback. |
+| `supabase-storage` (misconfig) | GHSA-fgvp-cqg6-q8h2 / GHSA-3m3f-pjv4-x2fp | One GET `/storage/v1/version`. Critical when `<= 1.89.8` (RLS bypass via JWT role `none`). High on `1.89.9` for the sibling advisory only. `*.supabase.co` is informational (hosted already patched). Recommends `1.89.10+`. | No JWT (including role `none`), no Authorization or apikey header, no presigned URL, no `x-amz-copy-source`, no upload, no bucket create, no write, no exploit payload. |
 | `magento-polyshell` (recon) | CVE-2026-48356 (APSB26-73) | Version from the root response, or one GET `/magento_version`. Critical for versions before 2.4.9. | No backdoor-path probing, no admin crawl, no exploit payload, no POST. |
 | `yootheme-pro` (misconfig) | CVE-2026-102785 | Theme asset `?ver=` or a generator meta tag already in the page HTML. If that HTML was not stored, one GET of the in-scope page with no query string. Critical, version unconfirmed, for 5.0.0 through 5.0.52 (fixed in 5.0.53). Pro 4.x and earlier are not affected. Info when YOOtheme is present but the version is hidden. | Never requests the image handler or the cache endpoint. No FromFile or Save parameters, no php://input, no request body, no upload, no modified signed image URL, no path traversal, no webshell-name guessing, no POST. |
+| `amelia-pro` (misconfig) | CVE-2026-116751 | `ameliabooking` asset `?ver=` already in the page HTML, otherwise one GET of `/wp-content/plugins/ameliabooking/readme.txt`. Critical, version unconfirmed, for Amelia Pro 4.0 through 9.9.1 (fixed in 9.9.2). Commercial/Pro is distinguished from WordPress.org Lite by the separate 4.0+ version line on the shared `ameliabooking` slug. Info when Amelia is present but Pro edition/version is unclear. Lite-only fingerprints never yield vulnerable. | Never requests Amelia event-filter or API routes. No `tag` parameters, no SQL, no timing probes, no exploit payloads, no malformed input, no POST. |
+| `contact-form-7` (misconfig) | CVE-2026-114432 | Plugin asset `?ver=` already in the page HTML, or one GET `/wp-content/plugins/contact-form-7/readme.txt` Stable tag. High, version unconfirmed, for >= 6.2 and < 6.2.4 (6.2 through 6.2.3; fixed in 6.2.4+; 6.1.x and lower are not affected). When that version is in range, one GET `/wp-content/uploads/` (or a linked `wpcf7_uploads` folder); Critical if the response is an `Index of` autoindex listing (exposes the file-listing step behind the RCE path on stock Debian/Ubuntu Apache). Info when the plugin is present but the version is hidden. | No POST, no form submission, no file upload, no crafted or invalid-UTF-8 filenames, no attempt to fetch or execute an uploaded file, no attack payload, no malformed input. |
 
 The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
@@ -113,7 +116,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (75 test functions in `backend/tests/`):
+Tests (97 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q
