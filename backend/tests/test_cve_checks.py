@@ -27,6 +27,7 @@ from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
+from agents.cve_checks.wp_duplicate import CHECK as WP_DUPLICATE
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
 import planner
 import main
@@ -44,6 +45,7 @@ BANNED = (
     "tag%5B",
     "SLEEP(",
     "BENCHMARK(",
+    "admin-ajax",
 )
 
 
@@ -184,6 +186,7 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/storage/v1/version") == 1
     assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     assert paths.count("/wp-content/uploads/") == 0
     assert "/api/v1/mcp" not in paths
     assert "/api/v1/auto_login" not in paths
@@ -193,9 +196,15 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "apikey" not in blob.lower()
     assert "multipart" not in blob.lower()
     assert "wpcf7" not in blob.lower()
+    assert "localsync" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
+        for path in paths
+    )
+    assert all(
+        path == "/wp-content/plugins/local-sync/readme.txt"
+        or "local-sync" not in path
         for path in paths
     )
 
@@ -1750,3 +1759,133 @@ def test_amelia_check_source_is_get_only_static_fingerprint():
     assert "BENCHMARK(" not in text
     assert "Never requests Amelia event-filter" in text
     assert AMELIA_PRO.agent == "misconfig"
+
+
+# --- WP Duplicate / LocalSync (CVE-2026-123751) ------------------------------
+
+WP_DUPLICATE_README = "/wp-content/plugins/local-sync/readme.txt"
+
+
+def _wp_duplicate_readme(tag=None):
+    lines = [
+        "=== WP Duplicate ===",
+        "Contributors: revmakx, localsync",
+        "Requires at least: 3.0.1",
+        "Tested up to: 6.8",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "Formerly LocalSync. Clone and migrate WordPress sites.",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _assert_wp_duplicate_one_readme_get(transport):
+    assert [call[0] for call in transport.calls] == ["GET"]
+    assert [call[1] for call in transport.calls] == [WP_DUPLICATE_README]
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+
+
+@pytest.mark.parametrize("tag", ["1.1.11", "1.1.10", "1.0.0"])
+def test_wp_duplicate_vulnerable_stable_tags_are_critical(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wp_duplicate_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DUPLICATE.run({}, _ctx())
+    _assert_wp_duplicate_one_readme_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == f"wp-duplicate:{tag}"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-123751" in found[0]["evidence"]
+    assert "unauthenticated file upload" in found[0]["evidence"]
+    assert "no fix" in found[0]["evidence"].lower()
+    assert "remove the plugin" in found[0]["evidence"].lower()
+    # Consent-first copy: describe wild exploitation, never claim the scanner exploits.
+    assert "scanner" not in found[0]["evidence"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+    assert "No upload" in found[0]["evidence"]
+
+
+def test_wp_duplicate_higher_version_is_not_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wp_duplicate_readme("1.1.12"),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DUPLICATE.run({}, _ctx())
+    _assert_wp_duplicate_one_readme_get(transport)
+    assert _critical(found) == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "wp-duplicate:review:1.1.12"
+    assert "review" in found[0]["title"].lower()
+
+
+def test_wp_duplicate_missing_plugin_has_no_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert WP_DUPLICATE.run({}, _ctx()) == []
+    _assert_wp_duplicate_one_readme_get(transport)
+
+
+def test_wp_duplicate_unparseable_readme_is_high(monkeypatch):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wp_duplicate_readme(None),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DUPLICATE.run({}, _ctx())
+    _assert_wp_duplicate_one_readme_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "wp-duplicate:unknown"
+    assert "remove" in found[0]["evidence"].lower() or "confirm" in found[0]["evidence"].lower()
+
+
+def test_wp_duplicate_exactly_one_get_to_readme_and_nothing_else(monkeypatch):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wp_duplicate_readme("1.1.11"),
+    }
+    _install(monkeypatch, transport)
+    WP_DUPLICATE.run({}, _ctx())
+    assert len(transport.calls) == 1
+    assert transport.calls[0] == ("GET", WP_DUPLICATE_README, None, False)
+    blob = " ".join(call[1] for call in transport.calls)
+    assert "admin-ajax" not in blob
+    assert "upload" not in blob.lower() or "readme" in blob
+    assert "sync" not in blob.lower() or "local-sync" in blob
+    assert "localsync/readme" not in blob
+    assert "wp-duplicate/readme" not in blob
+
+
+def test_wp_duplicate_check_source_is_get_only_readme_fingerprint():
+    text = (ROOT / "agents" / "cve_checks" / "wp_duplicate.py").read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "multipart" not in text.lower()
+    # admin-ajax may appear only in negative safety copy, never as a requested path.
+    assert "admin-ajax.php" not in text.lower()
+    assert "Never requests upload or sync endpoints, admin-ajax" in text
+    assert WP_DUPLICATE.agent == "misconfig"
+    assert WP_DUPLICATE.cve == "CVE-2026-123751"
+    assert "local-sync" in WP_DUPLICATE.sends
+    assert "admin-ajax" in WP_DUPLICATE.does_not_send.lower()
+

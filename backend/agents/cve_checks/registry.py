@@ -16,6 +16,7 @@ from . import (
     supabase_storage,
     wedevs,
     wordpress,
+    wp_duplicate,
     yootheme,
 )
 from .spec import CveCheck
@@ -37,6 +38,7 @@ CHECKS: tuple[CveCheck, ...] = (
     supabase_storage.CHECK,
     amelia_pro.CHECK,
     contact_form_7.CHECK,
+    wp_duplicate.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
