@@ -14,6 +14,7 @@ from . import (
     nodered,
     php2shell,
     supabase_storage,
+    vite_dev_server,
     wedevs,
     wordpress,
     yootheme,
@@ -37,6 +38,7 @@ CHECKS: tuple[CveCheck, ...] = (
     supabase_storage.CHECK,
     amelia_pro.CHECK,
     contact_form_7.CHECK,
+    vite_dev_server.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]

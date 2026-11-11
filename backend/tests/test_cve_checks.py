@@ -25,6 +25,10 @@ from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.amelia_pro import CHECK as AMELIA_PRO
 from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
+from agents.cve_checks.vite_dev_server import CHECK as VITE_DEV
+from agents.cve_checks.vite_dev_server import CLIENT_PATH as VITE_CLIENT
+from agents.cve_checks.vite_dev_server import TITLE as VITE_TITLE
+from agents.cve_checks.vite_dev_server import affected_vite, affected_vite_plus
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
@@ -44,6 +48,10 @@ BANNED = (
     "tag%5B",
     "SLEEP(",
     "BENCHMARK(",
+    "/@fs/",
+    "/@id/",
+    "__vite-browser-external",
+    "__vite-optional-peer-dep",
 )
 
 
@@ -185,10 +193,13 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
     assert paths.count("/wp-content/uploads/") == 0
+    assert paths.count(VITE_CLIENT) == 1
     assert "/api/v1/mcp" not in paths
     assert "/api/v1/auto_login" not in paths
     assert "/wp-json/pm/v2" not in paths
     assert "/_next/" not in blob
+    assert "/@fs/" not in blob
+    assert "/@id/" not in blob
     assert "x-amz-copy-source" not in blob.lower()
     assert "apikey" not in blob.lower()
     assert "multipart" not in blob.lower()
@@ -1750,3 +1761,165 @@ def test_amelia_check_source_is_get_only_static_fingerprint():
     assert "BENCHMARK(" not in text
     assert "Never requests Amelia event-filter" in text
     assert AMELIA_PRO.agent == "misconfig"
+
+
+# --- Vite development server (GHSA-p4f5-76q4-ffq7) --------------------------
+
+_VITE_CLIENT_JS = """
+console.debug("[vite] connecting...");
+export function createHotContext(ownerPath) { return ownerPath; }
+new WebSocket(url, "vite-hmr");
+style.setAttribute("data-vite-dev-id", id);
+export function injectQuery(url, queryToInject) { return url; }
+"""
+
+_VITE_HTML = (
+    '<html><head>'
+    '<script type="module" src="/@vite/client"></script>'
+    '<script type="module" src="/@react-refresh"></script>'
+    '</head><body></body></html>'
+)
+
+_PROD_HTML = (
+    '<html><head>'
+    '<script type="module" crossorigin src="/assets/index-a1b2c3d4.js"></script>'
+    '<link rel="stylesheet" crossorigin href="/assets/index-e5f6g7h8.css">'
+    '</head><body><div id="app"></div></body></html>'
+)
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ((4, 5, 0), True), ((5, 4, 11), True),
+    ((6, 4, 5), True), ((6, 4, 6), False),
+    ((7, 3, 7), True), ((7, 3, 8), False),
+    ((8, 1, 6), True), ((8, 1, 7), False),
+    ((8, 2, 4), True), ((8, 2, 5), False),
+    ((8, 3, 6), True), ((8, 3, 7), False),
+    ((8, 4, 0), False), ((3, 2, 0), False),
+])
+def test_vite_version_matrix(version, vulnerable):
+    assert affected_vite(version) is vulnerable
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ((1, 5, 0), True), ((1, 4, 9), True), ((1, 5, 1), False), ((1, 6, 0), False),
+])
+def test_vite_plus_version_matrix(version, vulnerable):
+    assert affected_vite_plus(version) is vulnerable
+
+
+def test_vite_html_markers_are_critical_and_skip_client_get(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = VITE_DEV.run({}, _ctx(body=_VITE_HTML))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["title"] == VITE_TITLE
+    assert "dev server exposed" in found[0]["evidence"].lower()
+    assert "never run" in found[0]["evidence"].lower()
+    assert "production" in found[0]["evidence"].lower()
+    assert "exploit" not in found[0]["title"].lower()
+    assert found[0]["check"]["match"] == "vite-dev:recon HTML"
+    assert VITE_DEV.agent == "misconfig"
+
+
+def test_vite_mocked_client_js_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[VITE_CLIENT] = {
+        "status": 200,
+        "body": _VITE_CLIENT_JS,
+        "content_type": "text/javascript",
+    }
+    _install(monkeypatch, transport)
+    found = VITE_DEV.run({}, _ctx(body="<html><body>app</body></html>"))
+    assert [call[1] for call in transport.calls] == [VITE_CLIENT]
+    assert all(call[0] == "GET" and call[2] is None for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["title"] == VITE_TITLE
+    assert found[0]["check"]["match"] == f"vite-dev:GET {VITE_CLIENT}"
+
+
+def test_vite_production_build_html_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[VITE_CLIENT] = {"status": 404, "body": "Not Found"}
+    _install(monkeypatch, transport)
+    assert VITE_DEV.run({}, _ctx(body=_PROD_HTML)) == []
+    assert [call[1] for call in transport.calls] == [VITE_CLIENT]
+
+
+def test_vite_client_404_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[VITE_CLIENT] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert VITE_DEV.run({}, _ctx()) == []
+    assert [call[1] for call in transport.calls] == [VITE_CLIENT]
+
+
+def test_vite_never_requests_fs_or_id_paths(monkeypatch):
+    transport = Transport()
+    transport.routes[VITE_CLIENT] = {
+        "status": 200,
+        "body": _VITE_CLIENT_JS,
+        "content_type": "text/javascript",
+    }
+    _install(monkeypatch, transport)
+    VITE_DEV.run({}, _ctx(body=_VITE_HTML))
+    VITE_DEV.run({}, _ctx(body="<html></html>"))
+    paths = [call[1] for call in transport.calls]
+    assert paths == [VITE_CLIENT]
+    blob = " ".join(paths)
+    assert "/@fs/" not in blob
+    assert "/@id/" not in blob
+    assert "__vite-browser-external" not in blob
+    assert "__vite-optional-peer-dep" not in blob
+    text = (ROOT / "agents" / "cve_checks" / "vite_dev_server.py").read_text(
+        encoding="utf-8"
+    )
+    assert "fetch_path(ctx, CLIENT_PATH" in text
+    assert text.count("fetch_path(") == 1
+    assert "CLIENT_PATH = \"/@vite/client\"" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "decoy-secret" not in text
+    assert "getBuiltinModule" not in text
+    assert "does_not_send" in text or "Never requests" in text
+
+
+def test_vite_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_vite_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                VITE_DEV.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_vite_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host("https://vite.attacker.example/")
+    assert "allowlist" in str(exc.value)
+
+
+def test_vite_passive_version_refines_evidence(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_VITE_HTML)
+    ctx.findings = [{
+        "title": "Exposed dependency file: /package-lock.json",
+        "evidence": 'node_modules/vite": {"version": "6.4.5", "resolved": "..."}',
+        "check": {"match": "exposed:/package-lock.json"},
+    }]
+    found = VITE_DEV.run({}, ctx)
+    assert found and found[0]["severity"] == "critical"
+    assert "6.4.5" in found[0]["evidence"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert transport.calls == []
