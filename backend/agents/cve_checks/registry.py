@@ -6,6 +6,7 @@ from . import (
     contact_form_7,
     dependency_files,
     langflow,
+    latepoint,
     magento,
     metabase,
     mlflow_gateway,
@@ -37,6 +38,7 @@ CHECKS: tuple[CveCheck, ...] = (
     supabase_storage.CHECK,
     amelia_pro.CHECK,
     contact_form_7.CHECK,
+    latepoint.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
