@@ -17,6 +17,7 @@ from . import (
     php2shell,
     registration_form_woocommerce,
     supabase_storage,
+    vite_dev_server,
     wedevs,
     wordpress,
     wp_duplicate,
@@ -45,6 +46,7 @@ CHECKS: tuple[CveCheck, ...] = (
     registration_form_woocommerce.CHECK,
     wp_duplicate.CHECK,
     gpustack_auth.CHECK,
+    vite_dev_server.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
