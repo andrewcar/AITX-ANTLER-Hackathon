@@ -16,6 +16,7 @@ from agents.cve_checks.dependency_files import FILES
 from agents.cve_checks.magento import CHECK as MAGENTO
 from agents.cve_checks.metabase import CHECK as METABASE
 from agents.cve_checks.nextjs import CHECK as NEXT
+from agents.cve_checks.nextjs_nov2026 import CHECK as NEXT_NOV2026
 from agents.cve_checks.node_brotli import CHECK as BROTLI
 from agents.cve_checks.node_brotli import TITLE as BROTLI_TITLE
 from agents.cve_checks.nodered import CHECK as NODERED
@@ -24,13 +25,23 @@ from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.amelia_pro import CHECK as AMELIA_PRO
 from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
+from agents.cve_checks.latepoint import CHECK as LATEPOINT
+from agents.cve_checks.gpustack_auth import CHECK as GPUSTACK
+from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
+from agents.cve_checks.vite_dev_server import CHECK as VITE_DEV
+from agents.cve_checks.vite_dev_server import CLIENT_PATH as VITE_CLIENT
+from agents.cve_checks.vite_dev_server import TITLE as VITE_TITLE
+from agents.cve_checks.vite_dev_server import affected_vite, affected_vite_plus
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
 from agents.cve_checks.xen_orchestra import CHECK as XEN_ORCHESTRA
+from agents.cve_checks.wp_duplicate import CHECK as WP_DUPLICATE
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
 import planner
 import main
+import orchestrator
+from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 BANNED = (
@@ -38,13 +49,30 @@ BANNED = (
     "phpinfo",
     "update-core",
     "upgrade.php",
-    "/wp-content/upgrade",
     "/wp-admin/includes",
+    "setup-config.php",
+    "install.php",
     "/wp-json/amelia",
     "tag[",
     "tag%5B",
     "SLEEP(",
     "BENCHMARK(",
+    "admin-ajax.php",
+    "customer_cabinet__change_password",
+    "steps__start_from_order_intent",
+    "password_reset_token",
+    "order_intent_key",
+    "/@fs/",
+    "/@id/",
+    "__vite-browser-external",
+    "__vite-optional-peer-dep",
+    "/v2/users",
+    "/v2/api-keys",
+    "/v2/workers",
+    "/v2/inference-backends",
+    "from-yaml",
+    "X-GPUStack-Real-IP",
+    "admin-ajax",
 )
 
 
@@ -89,9 +117,10 @@ class Transport:
         self.post_type = "application/json"
 
     def fetch(self, url, session=None, max_bytes=65536, follow=False):
-        path = urlparse(url).path
+        parsed = urlparse(url)
+        path = parsed.path + (("?" + parsed.query) if parsed.query else "")
         self.calls.append(("GET", path, session, follow))
-        spec = self.routes.get(path, {})
+        spec = self.routes.get(path) or self.routes.get(parsed.path) or {}
         body = spec.get("body", "")
         headers = spec.get("headers") or {}
         ctype = spec.get("content_type", headers.get("content-type", "text/plain"))
@@ -183,11 +212,15 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/settings") == 1
     assert paths.count("/flows") == 1
     assert paths.count("/storage/v1/version") == 1
+    assert paths.count("/version") == 2  # mlflow + gpustack
     assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
     assert paths.count("/") == 2
+    assert paths.count(VITE_CLIENT) == 1
     assert "/api/v1/mcp" not in paths
     assert "/api/v1/auto_login" not in paths
     assert "/wp-json/pm/v2" not in paths
@@ -195,13 +228,29 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "/rest/" not in blob
     assert "/rest/v0" not in blob
     assert "authenticationtoken" not in blob.lower()
+    assert "/@fs/" not in blob
+    assert "/@id/" not in blob
     assert "x-amz-copy-source" not in blob.lower()
     assert "apikey" not in blob.lower()
     assert "multipart" not in blob.lower()
     assert "wpcf7" not in blob.lower()
+    assert "is null" not in blob.lower()
+    assert "is not null" not in blob.lower()
+    assert "x-gpustack-real-ip" not in blob.lower()
+    assert "localsync" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
+        for path in paths
+    )
+    assert all(
+        path == "/wp-content/plugins/latepoint/readme.txt"
+        or "latepoint" not in path
+        for path in paths
+    )
+    assert all(
+        path == "/wp-content/plugins/local-sync/readme.txt"
+        or "local-sync" not in path
         for path in paths
     )
 
@@ -294,6 +343,116 @@ def test_next_header_version_does_not_fetch_and_flags_critical(monkeypatch):
     assert UNCONFIRMED in found[0]["evidence"]
     assert "15.5.28" in found[0]["evidence"]
     assert NEXT.run({}, _ctx(headers={"x-powered-by": "Next.js", "x-nextjs-version": "16.4.1"})) == []
+
+
+# --- Next.js November 2026 (CVE-2026-119790) --------------------------------
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ((16, 4, 1), True), ((16, 4, 5), False), ((16, 5, 0), False),
+    ((15, 5, 20), True), ((15, 5, 29), False), ((15, 4, 0), True),
+    ((15, 0, 0), True), ((14, 2, 5), False), ((17, 0, 0), False),
+])
+def test_next_nov2026_version_matrix(version, vulnerable):
+    from agents.cve_checks.nextjs_nov2026 import outdated
+    assert outdated(version) is vulnerable
+
+
+def test_next_nov2026_powered_by_16_4_1_is_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Next.js 16.4.1"}))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-119790" in found[0]["evidence"]
+    assert "GHSA-mfr8-8qww-v76h" in found[0]["evidence"]
+    assert "16.4.5" in found[0]["evidence"]
+
+
+def test_next_nov2026_powered_by_16_4_5_has_no_version_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Next.js 16.4.5"})) == []
+    assert transport.calls == []
+
+
+def test_next_nov2026_powered_by_15_5_20_is_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Next.js 15.5.20"}))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert UNCONFIRMED in found[0]["title"]
+    assert "15.5.29" in found[0]["evidence"]
+    assert "CVE-2026-119351" in found[0]["evidence"]
+
+
+def test_next_nov2026_powered_by_15_5_29_has_no_version_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Next.js 15.5.29"})) == []
+    assert transport.calls == []
+
+
+def test_next_nov2026_markers_without_version_are_info_only(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = '<div id="__next"></div><script>self.__NEXT_DATA__={}</script>'
+    found = NEXT_NOV2026.run({}, _ctx(body=html))
+    assert [call[1] for call in transport.calls] == ["/package.json"]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["title"] == "Next.js detected; verify Nov 2026 security release"
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "definitely vulnerable" not in found[0]["evidence"].lower()
+    assert "CVE-2026-119790" in found[0]["evidence"]
+
+
+def test_next_nov2026_non_next_site_is_silent(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Express"}, body="<html></html>")) == []
+    assert transport.calls == []
+
+
+def test_next_nov2026_package_json_version_when_header_hidden(monkeypatch):
+    transport = Transport()
+    transport.routes["/package.json"] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": json.dumps({"dependencies": {"next": "16.4.1", "react": "19.0.0"}}),
+    }
+    _install(monkeypatch, transport)
+    found = NEXT_NOV2026.run({}, _ctx(body='/_next/static/chunks/main.js'))
+    assert [call[1] for call in transport.calls] == ["/package.json"]
+    assert len(found) == 1
+    assert "16.4.1" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
+
+
+def test_next_nov2026_uses_cached_package_json_without_fetch(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body='/_next/static/chunks/main.js')
+    ctx.recon_root["package_json"] = json.dumps({
+        "devDependencies": {"next": "^15.5.20"},
+    })
+    found = NEXT_NOV2026.run({}, ctx)
+    assert transport.calls == []
+    assert len(found) == 1
+    assert "15.5.20" in found[0]["title"]
+
+
+def test_next_nov2026_does_not_request_build_manifest(monkeypatch):
+    transport = Transport()
+    transport.routes["/package.json"] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    html = '<script src="/_next/static/abc123/pages/index.js"></script>'
+    NEXT_NOV2026.run({}, _ctx(body=html))
+    paths = [call[1] for call in transport.calls]
+    assert paths == ["/package.json"]
+    assert all("_buildManifest" not in path for path in paths)
 
 
 # --- Node Brotli ------------------------------------------------------------
@@ -526,45 +685,110 @@ def test_nodered_html_shell_is_not_the_editor(monkeypatch):
     assert all(call[0] == "GET" for call in transport.calls)
 
 
-# --- WordPress --------------------------------------------------------------
+# --- WordPress (CVE-2026-119977) --------------------------------------------
 
 @pytest.mark.parametrize("version,vulnerable", [
-    ("4.6.9", False), ("4.7", True), ("4.7.0", True), ("5.0", True),
-    ("6.4.2", True), ("7.1.3", True), ("7.1.4", False), ("7.2.0", False), ("8.0", False),
+    ("4.6.9", False),
+    ("4.7", True), ("4.7.0", True), ("4.7.38", True), ("4.7.39", False),
+    ("5.0", True), ("6.4.2", True), ("6.5.13", True), ("6.5.14", False),
+    ("6.8.11", True), ("6.8.12", False), ("6.9.10", True), ("6.9.11", False),
+    ("7.0.7", True), ("7.0.8", False),
+    ("7.1.3", True), ("7.1.4", False), ("7.2.0", False), ("8.0", False),
 ])
-def test_wordpress_range(version, vulnerable):
+def test_wordpress_branch_floors(version, vulnerable):
     from agents.cve_checks.versions import parse_dotted
-    from agents.cve_checks.wordpress import in_range
-    assert in_range(parse_dotted(version)) is vulnerable
+    from agents.cve_checks.wordpress import is_vulnerable
+    assert is_vulnerable(parse_dotted(version)) is vulnerable
 
 
-def test_wordpress_generator_is_passive_and_actively_exploited(monkeypatch):
+def test_wordpress_generator_713_reports_cve(monkeypatch):
     transport = Transport()
     _install(monkeypatch, transport)
-    html = '<meta name="generator" content="WordPress 6.4.2" />'
+    html = '<meta name="generator" content="WordPress 7.1.3" />'
     found = WORDPRESS.run({}, _ctx(body=html))
-    assert transport.calls == []
+    assert [call[1] for call in transport.calls] == ["/wp-content/upgrade/"]
+    assert len(found) == 1
     assert found[0]["severity"] == "critical"
-    assert "actively exploited" in found[0]["title"]
+    assert "CVE-2026-119977" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
     assert UNCONFIRMED in found[0]["evidence"]
     assert "CISA KEV" in found[0]["evidence"]
     assert "7.1.4" in found[0]["fix"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "No exploit payload" in found[0]["evidence"]
 
 
-def test_wordpress_readme_is_the_only_extra_get(monkeypatch):
+def test_wordpress_generator_714_is_fixed(monkeypatch):
     transport = Transport()
-    transport.routes["/readme.html"] = {
+    _install(monkeypatch, transport)
+    html = '<meta name="generator" content="WordPress 7.1.4" />'
+    found = WORDPRESS.run({}, _ctx(body=html))
+    assert [call[1] for call in transport.calls] == ["/wp-content/upgrade/"]
+    assert _critical(found) == []
+    assert all(item.get("check", {}).get("match") != "wordpress:7.1.4" for item in found)
+
+
+def test_wordpress_backport_6812_is_fixed(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = '<meta name="generator" content="WordPress 6.8.12" />'
+    found = WORDPRESS.run({}, _ctx(body=html))
+    assert _critical(found) == []
+    assert all("6.8.12" not in (item.get("check") or {}).get("match", "") or
+               item["severity"] != "critical" for item in found)
+
+
+def test_wordpress_generator_6811_reports_cve(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = '<meta name="generator" content="WordPress 6.8.11" />'
+    found = WORDPRESS.run({}, _ctx(body=html))
+    assert len(_critical(found)) == 1
+    assert found[0]["check"]["match"] == "wordpress:6.8.11"
+    assert "CVE-2026-119977" in found[0]["evidence"]
+    assert "6.8.12" in found[0]["fix"]
+
+
+def test_wordpress_feed_fallback_without_generator(monkeypatch):
+    transport = Transport()
+    transport.routes["/feed/"] = {
         "status": 200,
-        "content_type": "text/html",
-        "body": "<html><title>WordPress &#8250; ReadMe</title><br /> Version 7.1.3</html>",
+        "content_type": "application/rss+xml",
+        "body": "<rss><channel><generator>https://wordpress.org/?v=7.1.2</generator></channel></rss>",
     }
     _install(monkeypatch, transport)
     found = WORDPRESS.run({}, _ctx(body="<html><p>hello</p></html>"))
-    assert [call[1] for call in transport.calls] == ["/readme.html"]
-    assert found and "7.1.3" in found[0]["title"]
-    joined = " ".join(call[1] for call in transport.calls)
-    for banned in ("update-core", "upgrade.php", "/wp-content/upgrade"):
-        assert banned not in joined
+    paths = [call[1] for call in transport.calls]
+    assert paths[0] == "/feed/"
+    assert "/readme.html" not in paths
+    assert "upgrade.php" not in " ".join(paths)
+    assert "update-core" not in " ".join(paths)
+    assert len(_critical(found)) == 1
+    assert "7.1.2" in found[0]["title"]
+    assert "CVE-2026-119977" in found[0]["evidence"]
+
+
+def test_wordpress_upgrade_listing_is_medium_without_exploit_language(monkeypatch):
+    transport = Transport()
+    transport.routes["/wp-content/upgrade/"] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": "<html><head><title>Index of /wp-content/upgrade/</title></head>"
+                "<body><h1>Index of /wp-content/upgrade/</h1>"
+                "<a href=\"/\">Parent Directory</a></body></html>",
+    }
+    _install(monkeypatch, transport)
+    html = '<meta name="generator" content="WordPress 7.1.4" />'
+    found = WORDPRESS.run({}, _ctx(body=html))
+    listing = [item for item in found if item.get("check", {}).get("match") == "wordpress:upgrade-listing"]
+    assert len(listing) == 1
+    assert listing[0]["severity"] == "medium"
+    blob = (listing[0]["title"] + " " + listing[0]["evidence"]).lower()
+    for banned in ("exploit", "rce", "payload", "weaponiz"):
+        assert banned not in blob
+    assert "directory listing" in blob or "listable" in blob
+    assert "No recursion" in listing[0]["evidence"] or "no recursion" in listing[0]["evidence"].lower()
+    assert [call[1] for call in transport.calls] == ["/wp-content/upgrade/"]
 
 
 # --- YOOtheme Pro ----------------------------------------------------------
@@ -1177,6 +1401,165 @@ def test_supabase_storage_check_is_get_only_and_never_sends_auth_material(monkey
     assert "No JWT" in found[0]["evidence"]
 
 
+# --- GPUStack localhost auto-admin (CVE-2026-102895) ------------------------
+
+GPUSTACK_VERSION = "/version"
+
+
+def _gpustack_version_body(version: str, commit: str = "abc1234") -> str:
+    return json.dumps({"version": version, "git_commit": commit})
+
+
+def _gpustack_ui(version: str | None = None) -> str:
+    ver = f" GPUStack {version}" if version else ""
+    return (
+        "<html><head><title>GPUStack</title>"
+        "<script src=\"/js/index.js\"></script>"
+        f"<link rel=\"stylesheet\" href=\"/css/index.css\"></head>"
+        f"<body>Welcome to GPUStack{ver}</body></html>"
+    )
+
+
+def _assert_one_gpustack_get(transport):
+    assert transport.calls == [("GET", GPUSTACK_VERSION, None, False)]
+    assert {call[0] for call in transport.calls} == {"GET"}
+
+
+def test_gpustack_211_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": _gpustack_version_body("2.1.1"),
+    }
+    _install(monkeypatch, transport)
+    found = GPUSTACK.run({}, _ctx())
+    _assert_one_gpustack_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["id"] == "gpustack"
+    assert found[0]["check"]["match"] == "gpustack:2.1.1"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "GPUStack detected, version 2.1.1 < 2.2.0" in found[0]["title"]
+    assert "CVE-2026-102895" in found[0]["title"]
+    assert "likely vulnerable" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "2.2.0" in found[0]["fix"]
+    assert "force_auth_localhost=true" in found[0]["fix"]
+    assert "X-GPUStack-Real-IP" in found[0]["fix"]
+    assert "No X-GPUStack-Real-IP" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "exploit" not in found[0]["evidence"].lower()
+    assert GPUSTACK.agent == "misconfig"
+
+
+def test_gpustack_220_is_clean(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": _gpustack_version_body("2.2.0"),
+    }
+    _install(monkeypatch, transport)
+    assert GPUSTACK.run({}, _ctx(body=_gpustack_ui("2.1.1"))) == []
+    _assert_one_gpustack_get(transport)
+    transport.calls.clear()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "body": _gpustack_version_body("2.3.0"),
+    }
+    assert GPUSTACK.run({}, _ctx()) == []
+    _assert_one_gpustack_get(transport)
+
+
+def test_gpustack_unknown_version_is_informational(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {"status": 404, "body": "not found"}
+    _install(monkeypatch, transport)
+    found = GPUSTACK.run({}, _ctx(body=_gpustack_ui()))
+    _assert_one_gpustack_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "gpustack:unknown"
+    assert "GPUStack admin interface exposed" in found[0]["title"]
+    assert "confirm version >= 2.2.0" in found[0]["title"]
+    assert "force_auth_localhost=true" in found[0]["title"]
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "force_auth_localhost=true" in found[0]["fix"]
+
+
+def test_gpustack_non_gpustack_page_is_not_a_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "body": "2.1.1\n",
+    }
+    _install(monkeypatch, transport)
+    assert GPUSTACK.run({}, _ctx(body="<html><title>Welcome</title></html>")) == []
+    _assert_one_gpustack_get(transport)
+    transport.calls.clear()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": '{"version":"2.1.1","package":"Other"}',
+    }
+    assert GPUSTACK.run({}, _ctx()) == []
+    _assert_one_gpustack_get(transport)
+
+
+def test_gpustack_check_is_one_get_without_spoofed_headers(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "body": _gpustack_version_body("2.1.1"),
+    }
+    _install(monkeypatch, transport)
+    found = GPUSTACK.run({}, _ctx())
+    _assert_one_gpustack_get(transport)
+    assert len(transport.calls) == 1
+    method, path, session, follow = transport.calls[0]
+    assert method == "GET"
+    assert path == GPUSTACK_VERSION
+    assert session is None
+    assert follow is False
+    assert found and found[0]["severity"] == "critical"
+    text = (ROOT / "agents" / "cve_checks" / "gpustack_auth.py").read_text(
+        encoding="utf-8"
+    )
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, VERSION" in text
+    assert 'VERSION = "/version"' in text
+    # Probe is a bare GET through client.fetch_path — no custom headers or body.
+    assert "headers=" not in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "requests." not in text
+    # Never constructs a spoofed forwarding header as request material.
+    for banned in (
+        'X-GPUStack-Real-IP"',
+        "'X-GPUStack-Real-IP'",
+        "X-Forwarded-For:",
+        "X-Real-IP:",
+        "Forwarded:",
+        '"/v2/users"',
+        "'/v2/users'",
+        '"/v2/api-keys"',
+        "'/v2/api-keys'",
+        '"/v2/workers"',
+        "'/v2/workers'",
+        '"/v2/inference-backends"',
+        "'/v2/inference-backends'",
+        '"from-yaml"',
+        "'from-yaml'",
+        "127.0.0.1",
+    ):
+        assert banned not in text
+    assert "exploit" not in found[0]["title"].lower()
+    assert "exploit" not in found[0]["evidence"].lower()
+    assert "No X-GPUStack-Real-IP" in found[0]["evidence"]
+
+
 # --- Contact Form 7 ---------------------------------------------------------
 
 CF7_README = "/wp-content/plugins/contact-form-7/readme.txt"
@@ -1442,6 +1825,193 @@ def test_magento_marker_without_version_is_info(monkeypatch):
     found = MAGENTO.run({}, _ctx(body='<script type="text/x-magento-init">{}</script>'))
     assert found[0]["severity"] == "info"
     assert UNCONFIRMED not in found[0]["title"]
+
+
+# --- Registration Form for WooCommerce (CVE-2026-119075) --------------------
+
+TGWCFB_README = "/wp-content/plugins/registration-form-for-woocommerce/readme.txt"
+
+
+def _tgwcfb_readme(tag=None, changelog=None):
+    lines = [
+        "=== Registration Form for WooCommerce ===",
+        "Contributors: ThemeGrill",
+        "Requires at least: 5.5",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend(["", "== Changelog =="])
+    if changelog is not None:
+        lines.append(f"= {changelog}       - 06-11-2026 =")
+        lines.append("* Fix - test entry.")
+    elif tag is not None:
+        lines.append(f"= {tag}       - 06-11-2026 =")
+        lines.append("* Fix - test entry.")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_tgwcfb_one_get(transport):
+    assert transport.calls == [("GET", TGWCFB_README, None, False)]
+
+
+@pytest.mark.parametrize("tag,critical", [
+    ("1.1.4", True),
+    ("1.1.3", True),
+    ("1.1", True),
+    ("1.0.0", True),
+    ("1.1.5", False),
+    ("1.1.10", False),
+    ("2.0.0", False),
+])
+def test_tgwcfb_stable_tag_range(monkeypatch, tag, critical):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": 200, "content_type": "text/plain", "body": _tgwcfb_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = TGWCFB.run({}, _ctx())
+    _assert_tgwcfb_one_get(transport)
+    if critical:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert found[0]["check"]["match"] == f"registration-form-woocommerce:{tag}"
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert "CVE-2026-119075" in found[0]["evidence"]
+        assert "lag" in found[0]["evidence"].lower()
+        assert "1.1.5" in found[0]["fix"]
+        assert "administrator" in found[0]["fix"].lower() or "admin" in found[0]["fix"].lower()
+        assert "exploit" not in found[0]["title"].lower()
+        blob = json.dumps(found).lower()
+        assert "proven" not in blob
+        assert "user_roles=administrator" not in blob
+    else:
+        assert found == []
+
+
+def test_tgwcfb_114_request_budget_is_exactly_one_get(monkeypatch):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": 200, "content_type": "text/plain", "body": _tgwcfb_readme("1.1.4"),
+    }
+    _install(monkeypatch, transport)
+    found = TGWCFB.run({}, _ctx())
+    _assert_tgwcfb_one_get(transport)
+    assert found[0]["severity"] == "critical"
+    text = (
+        ROOT / "agents" / "cve_checks" / "registration_form_woocommerce.py"
+    ).read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    for banned in (
+        "woocommerce_after_checkout_validation",
+        "validate_checkout_fields",
+        "FormHandler",
+        "$_POST",
+        "multipart",
+        "<?php",
+        "php://",
+        "../",
+    ):
+        assert banned not in text
+
+
+def test_tgwcfb_changelog_fallback_flags_114(monkeypatch):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _tgwcfb_readme(tag=None, changelog="1.1.4"),
+    }
+    _install(monkeypatch, transport)
+    found = TGWCFB.run({}, _ctx())
+    _assert_tgwcfb_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "registration-form-woocommerce:1.1.4"
+    assert "Changelog" in found[0]["evidence"]
+
+
+@pytest.mark.parametrize("status,body", [
+    (404, ""),
+    (200, "<!doctype html><html><head><title>Registration Form</title></head>"
+          "<body>Stable tag: 1.1.4</body></html>"),
+    (200, "<html><body><p>Registration Form for WooCommerce Stable tag: 1.1.4</p></body></html>"),
+    (200, "=== Some Other Plugin ===\nContributors: someone\nStable tag: 1.1.4\n"),
+    (200, "Registration Form for WooCommerce is mentioned.\nStable tag: 1.1.4\n"),
+    (200, "=== Registration Form for WooCommerce ===\nContributors: ThemeGrill\n"
+          "Requires at least: 5.5\n\n== Changelog ==\n* Fix - no version heading\n"),
+    (200, "not a readme at all\ngarbage\n$$$"),
+])
+def test_tgwcfb_missing_garbage_or_non_plugin_is_not_detected(monkeypatch, status, body):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": status, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert TGWCFB.run({}, _ctx()) == []
+    _assert_tgwcfb_one_get(transport)
+
+
+def test_tgwcfb_fixed_115_is_clean(monkeypatch):
+    transport = Transport()
+    transport.routes[TGWCFB_README] = {
+        "status": 200, "content_type": "text/plain", "body": _tgwcfb_readme("1.1.5"),
+    }
+    _install(monkeypatch, transport)
+    assert TGWCFB.run({}, _ctx()) == []
+    _assert_tgwcfb_one_get(transport)
+
+
+def test_tgwcfb_non_allowlisted_host_refused_before_any_request(monkeypatch):
+    opened = []
+
+    def opener(req, timeout=None):
+        opened.append(req.full_url)
+        raise AssertionError("non-allowlisted host opened a socket")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    monkeypatch.setattr(
+        orchestrator, "run_scan",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("run_scan must not run off the allowlist")
+        ),
+    )
+    with pytest.raises(main.ScopeError):
+        main.allowlisted_host("https://example.com/wp/")
+    assert opened == []
+
+    client = TestClient(main.app)
+    login = client.post("/auth/login", json={"email": "erwin@local", "password": "demo"})
+    assert login.status_code == 200
+    token = login.json()["token"]
+    denied = client.post(
+        "/scan",
+        json={"url": "https://example.com/"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert denied.status_code == 403
+    assert "allowlist" in denied.json()["detail"]
+    assert opened == []
+
+
+def test_tgwcfb_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_tgwcfb_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                TGWCFB.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
 
 
 # --- crawler JSON memory ----------------------------------------------------
@@ -1757,6 +2327,493 @@ def test_amelia_check_source_is_get_only_static_fingerprint():
     assert "Never requests Amelia event-filter" in text
     assert AMELIA_PRO.agent == "misconfig"
 
+# --- Vite development server (GHSA-p4f5-76q4-ffq7) --------------------------
+
+_VITE_CLIENT_JS = """
+console.debug("[vite] connecting...");
+export function createHotContext(ownerPath) { return ownerPath; }
+new WebSocket(url, "vite-hmr");
+style.setAttribute("data-vite-dev-id", id);
+export function injectQuery(url, queryToInject) { return url; }
+"""
+
+_VITE_HTML = (
+    '<html><head>'
+    '<script type="module" src="/@vite/client"></script>'
+    '<script type="module" src="/@react-refresh"></script>'
+    '</head><body></body></html>'
+)
+
+_PROD_HTML = (
+    '<html><head>'
+    '<script type="module" crossorigin src="/assets/index-a1b2c3d4.js"></script>'
+    '<link rel="stylesheet" crossorigin href="/assets/index-e5f6g7h8.css">'
+    '</head><body><div id="app"></div></body></html>'
+)
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ((4, 5, 0), True), ((5, 4, 11), True),
+    ((6, 4, 5), True), ((6, 4, 6), False),
+    ((7, 3, 7), True), ((7, 3, 8), False),
+    ((8, 1, 6), True), ((8, 1, 7), False),
+    ((8, 2, 4), True), ((8, 2, 5), False),
+    ((8, 3, 6), True), ((8, 3, 7), False),
+    ((8, 4, 0), False), ((3, 2, 0), False),
+])
+def test_vite_version_matrix(version, vulnerable):
+    assert affected_vite(version) is vulnerable
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ((1, 5, 0), True), ((1, 4, 9), True), ((1, 5, 1), False), ((1, 6, 0), False),
+])
+def test_vite_plus_version_matrix(version, vulnerable):
+    assert affected_vite_plus(version) is vulnerable
+
+
+def test_vite_html_markers_are_critical_and_skip_client_get(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = VITE_DEV.run({}, _ctx(body=_VITE_HTML))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["title"] == VITE_TITLE
+    assert "dev server exposed" in found[0]["evidence"].lower()
+    assert "never run" in found[0]["evidence"].lower()
+    assert "production" in found[0]["evidence"].lower()
+    assert "exploit" not in found[0]["title"].lower()
+    assert found[0]["check"]["match"] == "vite-dev:recon HTML"
+    assert VITE_DEV.agent == "misconfig"
+
+
+def test_vite_mocked_client_js_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[VITE_CLIENT] = {
+        "status": 200,
+        "body": _VITE_CLIENT_JS,
+        "content_type": "text/javascript",
+    }
+    _install(monkeypatch, transport)
+    found = VITE_DEV.run({}, _ctx(body="<html><body>app</body></html>"))
+    assert [call[1] for call in transport.calls] == [VITE_CLIENT]
+    assert all(call[0] == "GET" and call[2] is None for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["title"] == VITE_TITLE
+    assert found[0]["check"]["match"] == f"vite-dev:GET {VITE_CLIENT}"
+
+
+def test_vite_production_build_html_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[VITE_CLIENT] = {"status": 404, "body": "Not Found"}
+    _install(monkeypatch, transport)
+    assert VITE_DEV.run({}, _ctx(body=_PROD_HTML)) == []
+    assert [call[1] for call in transport.calls] == [VITE_CLIENT]
+
+
+def test_vite_client_404_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[VITE_CLIENT] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert VITE_DEV.run({}, _ctx()) == []
+    assert [call[1] for call in transport.calls] == [VITE_CLIENT]
+
+
+def test_vite_never_requests_fs_or_id_paths(monkeypatch):
+    transport = Transport()
+    transport.routes[VITE_CLIENT] = {
+        "status": 200,
+        "body": _VITE_CLIENT_JS,
+        "content_type": "text/javascript",
+    }
+    _install(monkeypatch, transport)
+    VITE_DEV.run({}, _ctx(body=_VITE_HTML))
+    VITE_DEV.run({}, _ctx(body="<html></html>"))
+    paths = [call[1] for call in transport.calls]
+    assert paths == [VITE_CLIENT]
+    blob = " ".join(paths)
+    assert "/@fs/" not in blob
+    assert "/@id/" not in blob
+    assert "__vite-browser-external" not in blob
+    assert "__vite-optional-peer-dep" not in blob
+    text = (ROOT / "agents" / "cve_checks" / "vite_dev_server.py").read_text(
+        encoding="utf-8"
+    )
+    assert "fetch_path(ctx, CLIENT_PATH" in text
+    assert text.count("fetch_path(") == 1
+    assert "CLIENT_PATH = \"/@vite/client\"" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "decoy-secret" not in text
+    assert "getBuiltinModule" not in text
+    assert "does_not_send" in text or "Never requests" in text
+
+
+def test_vite_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_vite_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                VITE_DEV.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_vite_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host("https://vite.attacker.example/")
+    assert "allowlist" in str(exc.value)
+
+
+def test_vite_passive_version_refines_evidence(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_VITE_HTML)
+    ctx.findings = [{
+        "title": "Exposed dependency file: /package-lock.json",
+        "evidence": 'node_modules/vite": {"version": "6.4.5", "resolved": "..."}',
+        "check": {"match": "exposed:/package-lock.json"},
+    }]
+    found = VITE_DEV.run({}, ctx)
+    assert found and found[0]["severity"] == "critical"
+    assert "6.4.5" in found[0]["evidence"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert transport.calls == []
+
+# --- WP Duplicate / LocalSync (CVE-2026-123751) ------------------------------
+
+WP_DUPLICATE_README = "/wp-content/plugins/local-sync/readme.txt"
+
+
+def _wp_duplicate_readme(tag=None):
+    lines = [
+        "=== WP Duplicate ===",
+        "Contributors: revmakx, localsync",
+        "Requires at least: 3.0.1",
+        "Tested up to: 6.8",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "Formerly LocalSync. Clone and migrate WordPress sites.",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _assert_wp_duplicate_one_readme_get(transport):
+    assert [call[0] for call in transport.calls] == ["GET"]
+    assert [call[1] for call in transport.calls] == [WP_DUPLICATE_README]
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+
+
+@pytest.mark.parametrize("tag", ["1.1.11", "1.1.10", "1.0.0"])
+def test_wp_duplicate_vulnerable_stable_tags_are_critical(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wp_duplicate_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DUPLICATE.run({}, _ctx())
+    _assert_wp_duplicate_one_readme_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == f"wp-duplicate:{tag}"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-123751" in found[0]["evidence"]
+    assert "unauthenticated file upload" in found[0]["evidence"]
+    assert "no fix" in found[0]["evidence"].lower()
+    assert "remove the plugin" in found[0]["evidence"].lower()
+    # Consent-first copy: describe wild exploitation, never claim the scanner exploits.
+    assert "scanner" not in found[0]["evidence"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+    assert "No upload" in found[0]["evidence"]
+
+
+def test_wp_duplicate_higher_version_is_not_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wp_duplicate_readme("1.1.12"),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DUPLICATE.run({}, _ctx())
+    _assert_wp_duplicate_one_readme_get(transport)
+    assert _critical(found) == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "wp-duplicate:review:1.1.12"
+    assert "review" in found[0]["title"].lower()
+
+
+def test_wp_duplicate_missing_plugin_has_no_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert WP_DUPLICATE.run({}, _ctx()) == []
+    _assert_wp_duplicate_one_readme_get(transport)
+
+
+def test_wp_duplicate_unparseable_readme_is_high(monkeypatch):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wp_duplicate_readme(None),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DUPLICATE.run({}, _ctx())
+    _assert_wp_duplicate_one_readme_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "wp-duplicate:unknown"
+    assert "remove" in found[0]["evidence"].lower() or "confirm" in found[0]["evidence"].lower()
+
+
+def test_wp_duplicate_exactly_one_get_to_readme_and_nothing_else(monkeypatch):
+    transport = Transport()
+    transport.routes[WP_DUPLICATE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wp_duplicate_readme("1.1.11"),
+    }
+    _install(monkeypatch, transport)
+    WP_DUPLICATE.run({}, _ctx())
+    assert len(transport.calls) == 1
+    assert transport.calls[0] == ("GET", WP_DUPLICATE_README, None, False)
+    blob = " ".join(call[1] for call in transport.calls)
+    assert "admin-ajax" not in blob
+    assert "upload" not in blob.lower() or "readme" in blob
+    assert "sync" not in blob.lower() or "local-sync" in blob
+    assert "localsync/readme" not in blob
+    assert "wp-duplicate/readme" not in blob
+
+
+def test_wp_duplicate_check_source_is_get_only_readme_fingerprint():
+    text = (ROOT / "agents" / "cve_checks" / "wp_duplicate.py").read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "multipart" not in text.lower()
+    # admin-ajax may appear only in negative safety copy, never as a requested path.
+    assert "admin-ajax.php" not in text.lower()
+    assert "Never requests upload or sync endpoints, admin-ajax" in text
+    assert WP_DUPLICATE.agent == "misconfig"
+    assert WP_DUPLICATE.cve == "CVE-2026-123751"
+    assert "local-sync" in WP_DUPLICATE.sends
+    assert "admin-ajax" in WP_DUPLICATE.does_not_send.lower()
+
+# --- LatePoint --------------------------------------------------------------
+
+LATEPOINT_README = "/wp-content/plugins/latepoint/readme.txt"
+
+
+def _latepoint_readme(tag=None, *, changelog=None, name="LatePoint"):
+    lines = [
+        f"=== Appointment Booking Plugin – {name} | Calendar & Scheduling for WordPress ===",
+        "Contributors: latepoint",
+        "Requires at least: 5.0",
+        "Tested up to: 6.8",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "LatePoint is an appointment booking and scheduling plugin for WordPress.",
+        "",
+        "== Changelog ==",
+        "",
+    ])
+    if changelog is not None:
+        lines.append(f"= {changelog} =")
+        lines.append("* Security and maintenance release.")
+    elif tag is not None:
+        lines.append(f"= {tag} =")
+        lines.append("* Release notes.")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_latepoint_readme_get_only(transport):
+    assert [call[0] for call in transport.calls] == ["GET"]
+    assert [call[1] for call in transport.calls] == [LATEPOINT_README]
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    for banned in (
+        "admin-ajax.php",
+        "customer_cabinet__change_password",
+        "steps__start_from_order_intent",
+        "password_reset_token",
+        "order_intent_key",
+        "is null",
+        "is not null",
+    ):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag,vulnerable", [
+    ("5.7.6", True),
+    ("5.7.5", True),
+    ("5.0.0", True),
+    ("5.7.7", False),
+    ("5.8.0", False),
+    ("6.0.0", False),
+])
+def test_latepoint_version_matrix(tag, vulnerable):
+    from agents.cve_checks.latepoint import affected
+    from agents.cve_checks.versions import parse_dotted
+
+    assert bool(affected(parse_dotted(tag))) is vulnerable
+
+
+@pytest.mark.parametrize("tag,flagged", [
+    ("5.7.6", True),
+    ("5.7.7", False),
+    ("5.8.0", False),
+])
+def test_latepoint_readme_stable_tag(monkeypatch, tag, flagged):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200, "content_type": "text/plain", "body": _latepoint_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = LATEPOINT.run({}, _ctx())
+    _assert_latepoint_readme_get_only(transport)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert UNCONFIRMED in found[0]["title"]
+        assert found[0]["check"]["match"] == f"latepoint:{tag}"
+        assert "CVE-2026-118066" in found[0]["evidence"]
+        assert "Patchstack telemetry, not CISA KEV" in found[0]["evidence"]
+        assert "admin-ajax.php" in found[0]["evidence"]
+    else:
+        assert found == []
+
+
+def test_latepoint_changelog_fallback_when_stable_tag_missing(monkeypatch):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _latepoint_readme(None, changelog="5.7.6"),
+    }
+    _install(monkeypatch, transport)
+    found = LATEPOINT.run({}, _ctx())
+    _assert_latepoint_readme_get_only(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "latepoint:5.7.6"
+    assert "changelog version" in found[0]["evidence"]
+
+
+def test_latepoint_404_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert LATEPOINT.run({}, _ctx()) == []
+    _assert_latepoint_readme_get_only(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "<html><head></head><body>LatePoint Stable tag: 5.7.6</body></html>",
+    "=== Some Other Plugin ===\nStable tag: 5.7.6\n",
+    "not a readme at all",
+])
+def test_latepoint_malformed_readme_is_none(monkeypatch, body):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert LATEPOINT.run({}, _ctx()) == []
+    _assert_latepoint_readme_get_only(transport)
+
+
+def test_latepoint_readme_without_version_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": (
+            "=== Appointment Booking Plugin – LatePoint ===\n"
+            "Contributors: latepoint\n"
+            "Requires at least: 5.0\n\n"
+            "LatePoint booking plugin.\n"
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = LATEPOINT.run({}, _ctx())
+    _assert_latepoint_readme_get_only(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "latepoint:unknown"
+
+
+def test_latepoint_only_issues_readme_get(monkeypatch):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200, "content_type": "text/plain", "body": _latepoint_readme("5.7.6"),
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = LATEPOINT.run({}, _ctx())
+    _assert_latepoint_readme_get_only(transport)
+    assert found and found[0]["severity"] == "critical"
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert "admin-ajax.php" not in " ".join(call[1] for call in transport.calls)
+
+
+def test_latepoint_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host("https://latepoint.attacker.example/wp-content/plugins/latepoint/readme.txt")
+    assert "allowlist" in str(exc.value)
+
+
+def test_latepoint_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_latepoint_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                LATEPOINT.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_latepoint_check_source_is_get_only_readme_fingerprint():
+    text = (ROOT / "agents" / "cve_checks" / "latepoint.py").read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert LATEPOINT.agent == "auth"
+    assert LATEPOINT.cve == "CVE-2026-118066"
+    # does_not_send documents banned routes; run() must still only call fetch_path once.
+    assert "Never requests admin-ajax.php" in text
+    assert "customer_cabinet__change_password" in text
+    assert "params[password_reset_token]" in text
 
 # --- Xen Orchestra (VSA-2026-062) -------------------------------------------
 
