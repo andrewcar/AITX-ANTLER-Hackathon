@@ -25,6 +25,7 @@ from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.amelia_pro import CHECK as AMELIA_PRO
 from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
+from agents.cve_checks.latepoint import CHECK as LATEPOINT
 from agents.cve_checks.gpustack_auth import CHECK as GPUSTACK
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
@@ -55,6 +56,11 @@ BANNED = (
     "tag%5B",
     "SLEEP(",
     "BENCHMARK(",
+    "admin-ajax.php",
+    "customer_cabinet__change_password",
+    "steps__start_from_order_intent",
+    "password_reset_token",
+    "order_intent_key",
     "/@fs/",
     "/@id/",
     "__vite-browser-external",
@@ -208,6 +214,7 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/version") == 2  # mlflow + gpustack
     assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     assert paths.count("/wp-content/uploads/") == 0
     assert paths.count(VITE_CLIENT) == 1
@@ -221,11 +228,18 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "apikey" not in blob.lower()
     assert "multipart" not in blob.lower()
     assert "wpcf7" not in blob.lower()
+    assert "is null" not in blob.lower()
+    assert "is not null" not in blob.lower()
     assert "x-gpustack-real-ip" not in blob.lower()
     assert "localsync" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
+        for path in paths
+    )
+    assert all(
+        path == "/wp-content/plugins/latepoint/readme.txt"
+        or "latepoint" not in path
         for path in paths
     )
     assert all(
@@ -2307,7 +2321,6 @@ def test_amelia_check_source_is_get_only_static_fingerprint():
     assert "Never requests Amelia event-filter" in text
     assert AMELIA_PRO.agent == "misconfig"
 
-
 # --- Vite development server (GHSA-p4f5-76q4-ffq7) --------------------------
 
 _VITE_CLIENT_JS = """
@@ -2597,3 +2610,201 @@ def test_wp_duplicate_check_source_is_get_only_readme_fingerprint():
     assert "local-sync" in WP_DUPLICATE.sends
     assert "admin-ajax" in WP_DUPLICATE.does_not_send.lower()
 
+# --- LatePoint --------------------------------------------------------------
+
+LATEPOINT_README = "/wp-content/plugins/latepoint/readme.txt"
+
+
+def _latepoint_readme(tag=None, *, changelog=None, name="LatePoint"):
+    lines = [
+        f"=== Appointment Booking Plugin – {name} | Calendar & Scheduling for WordPress ===",
+        "Contributors: latepoint",
+        "Requires at least: 5.0",
+        "Tested up to: 6.8",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "LatePoint is an appointment booking and scheduling plugin for WordPress.",
+        "",
+        "== Changelog ==",
+        "",
+    ])
+    if changelog is not None:
+        lines.append(f"= {changelog} =")
+        lines.append("* Security and maintenance release.")
+    elif tag is not None:
+        lines.append(f"= {tag} =")
+        lines.append("* Release notes.")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_latepoint_readme_get_only(transport):
+    assert [call[0] for call in transport.calls] == ["GET"]
+    assert [call[1] for call in transport.calls] == [LATEPOINT_README]
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    for banned in (
+        "admin-ajax.php",
+        "customer_cabinet__change_password",
+        "steps__start_from_order_intent",
+        "password_reset_token",
+        "order_intent_key",
+        "is null",
+        "is not null",
+    ):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag,vulnerable", [
+    ("5.7.6", True),
+    ("5.7.5", True),
+    ("5.0.0", True),
+    ("5.7.7", False),
+    ("5.8.0", False),
+    ("6.0.0", False),
+])
+def test_latepoint_version_matrix(tag, vulnerable):
+    from agents.cve_checks.latepoint import affected
+    from agents.cve_checks.versions import parse_dotted
+
+    assert bool(affected(parse_dotted(tag))) is vulnerable
+
+
+@pytest.mark.parametrize("tag,flagged", [
+    ("5.7.6", True),
+    ("5.7.7", False),
+    ("5.8.0", False),
+])
+def test_latepoint_readme_stable_tag(monkeypatch, tag, flagged):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200, "content_type": "text/plain", "body": _latepoint_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = LATEPOINT.run({}, _ctx())
+    _assert_latepoint_readme_get_only(transport)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert UNCONFIRMED in found[0]["title"]
+        assert found[0]["check"]["match"] == f"latepoint:{tag}"
+        assert "CVE-2026-118066" in found[0]["evidence"]
+        assert "Patchstack telemetry, not CISA KEV" in found[0]["evidence"]
+        assert "admin-ajax.php" in found[0]["evidence"]
+    else:
+        assert found == []
+
+
+def test_latepoint_changelog_fallback_when_stable_tag_missing(monkeypatch):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _latepoint_readme(None, changelog="5.7.6"),
+    }
+    _install(monkeypatch, transport)
+    found = LATEPOINT.run({}, _ctx())
+    _assert_latepoint_readme_get_only(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "latepoint:5.7.6"
+    assert "changelog version" in found[0]["evidence"]
+
+
+def test_latepoint_404_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert LATEPOINT.run({}, _ctx()) == []
+    _assert_latepoint_readme_get_only(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "<html><head></head><body>LatePoint Stable tag: 5.7.6</body></html>",
+    "=== Some Other Plugin ===\nStable tag: 5.7.6\n",
+    "not a readme at all",
+])
+def test_latepoint_malformed_readme_is_none(monkeypatch, body):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert LATEPOINT.run({}, _ctx()) == []
+    _assert_latepoint_readme_get_only(transport)
+
+
+def test_latepoint_readme_without_version_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": (
+            "=== Appointment Booking Plugin – LatePoint ===\n"
+            "Contributors: latepoint\n"
+            "Requires at least: 5.0\n\n"
+            "LatePoint booking plugin.\n"
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = LATEPOINT.run({}, _ctx())
+    _assert_latepoint_readme_get_only(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "latepoint:unknown"
+
+
+def test_latepoint_only_issues_readme_get(monkeypatch):
+    transport = Transport()
+    transport.routes[LATEPOINT_README] = {
+        "status": 200, "content_type": "text/plain", "body": _latepoint_readme("5.7.6"),
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = LATEPOINT.run({}, _ctx())
+    _assert_latepoint_readme_get_only(transport)
+    assert found and found[0]["severity"] == "critical"
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert "admin-ajax.php" not in " ".join(call[1] for call in transport.calls)
+
+
+def test_latepoint_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host("https://latepoint.attacker.example/wp-content/plugins/latepoint/readme.txt")
+    assert "allowlist" in str(exc.value)
+
+
+def test_latepoint_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_latepoint_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                LATEPOINT.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_latepoint_check_source_is_get_only_readme_fingerprint():
+    text = (ROOT / "agents" / "cve_checks" / "latepoint.py").read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert LATEPOINT.agent == "auth"
+    assert LATEPOINT.cve == "CVE-2026-118066"
+    # does_not_send documents banned routes; run() must still only call fetch_path once.
+    assert "Never requests admin-ajax.php" in text
+    assert "customer_cabinet__change_password" in text
+    assert "params[password_reset_token]" in text

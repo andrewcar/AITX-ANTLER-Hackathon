@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (303 test functions).
+- **Tests:** `pytest` (322 test functions).
 
 ## Architecture
 
@@ -90,6 +90,7 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | `wp-duplicate` (misconfig) | CVE-2026-123751 | One GET `/wp-content/plugins/local-sync/readme.txt` (confirmed WordPress.org / WPScan slug; product formerly LocalSync). Critical, version unconfirmed, when Stable tag is 1.1.11 or lower: unauthenticated file upload / RCE, exploited in the wild, no known fix — deactivate and remove the plugin. High when the plugin readme is present but the version is unreadable. Info when a higher Stable tag is observed, for review. | Never requests upload or sync endpoints, admin-ajax actions, or alternate guessed slugs. No POST, no file upload, no auth value, no crafted parameters, no malformed input, no exploit payload. |
 | `gpustack` (misconfig) | CVE-2026-102895 (GHSA-gj9m-f8ph-pmhr, CISA KEV) | One GET `/version` (GPUStack's unauthenticated probe returns `version` + `git_commit`). Critical when the version is below 2.2.0. Info when the admin UI is fingerprinted but the version is hidden — confirm `>= 2.2.0` and `force_auth_localhost=true`. | Never sends `X-GPUStack-Real-IP` or any spoofed forwarding header. No POST/PUT/DELETE. No users, api-keys, workers, inference-backends, or from-yaml request. No auth-bypass probe, no upload, no exploit payload. |
 | `vite-dev-server` (misconfig) | GHSA-p4f5-76q4-ffq7 | Recon HTML already fetched for `/@vite/client` or `/@react-refresh`, otherwise one GET `/@vite/client` matching known Vite client markers (`[vite] connecting...`, `createHotContext`, `vite-hmr`, `data-vite-dev-id`). Critical when a Vite development server is publicly reachable: dev server exposed; any Vite below patched versions is vulnerable; never run the Vite development server in production. Affected: >=4.0.0 <=6.4.5, 7.0.0–7.3.7, 8.0.0–8.1.6, 8.2.0–8.2.4, 8.3.0–8.3.6; vite-plus <=1.5.0. Patched: 6.4.6, 7.3.8, 8.1.7, 8.3.7 (prefer over 8.2.5 if missing on npm); vite-plus 1.5.1; 4.x/5.x → >=6.4.6. Refines evidence when a Vite version is already visible (e.g. dependency_files output). | Never requests `/@id/__vite-browser-external`, `/@id/__vite-optional-peer-dep`, `/@fs/`, crafted or encoded module IDs, newline-injected URLs, advisory PoC paths, file-read attempts, writes, or malformed input. |
+| `latepoint` (auth) | CVE-2026-118066 | One GET `/wp-content/plugins/latepoint/readme.txt`. Critical, version unconfirmed, when the Stable tag (or latest changelog version) is through 5.7.6 (fixed in 5.7.7; changelog 2 November 2026). Patchstack CVSS 9.8 and known-exploited (Patchstack telemetry, not CISA KEV); Wordfence CVSS 9.1. Info when the plugin readme is present but the version is unparseable. | Never requests `admin-ajax.php` or LatePoint AJAX routes (`customer_cabinet__change_password`, `steps__start_from_order_intent`). No `params[password_reset_token]`, `params[order_intent_key]`, `IS NULL` / `IS NOT NULL` strings, password-reset requests, POSTs, logins, or writes. |
 
 The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
@@ -121,7 +122,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (97 test functions in `backend/tests/`):
+Tests (232 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q

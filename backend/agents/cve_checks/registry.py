@@ -7,6 +7,7 @@ from . import (
     dependency_files,
     gpustack_auth,
     langflow,
+    latepoint,
     magento,
     metabase,
     mlflow_gateway,
@@ -47,6 +48,7 @@ CHECKS: tuple[CveCheck, ...] = (
     wp_duplicate.CHECK,
     gpustack_auth.CHECK,
     vite_dev_server.CHECK,
+    latepoint.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
