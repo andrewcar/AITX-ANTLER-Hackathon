@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (213 test functions).
+- **Tests:** `pytest` (272 test functions).
 
 ## Architecture
 
@@ -87,6 +87,7 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | `amelia-pro` (misconfig) | CVE-2026-116751 | `ameliabooking` asset `?ver=` already in the page HTML, otherwise one GET of `/wp-content/plugins/ameliabooking/readme.txt`. Critical, version unconfirmed, for Amelia Pro 4.0 through 9.9.1 (fixed in 9.9.2). Commercial/Pro is distinguished from WordPress.org Lite by the separate 4.0+ version line on the shared `ameliabooking` slug. Info when Amelia is present but Pro edition/version is unclear. Lite-only fingerprints never yield vulnerable. | Never requests Amelia event-filter or API routes. No `tag` parameters, no SQL, no timing probes, no exploit payloads, no malformed input, no POST. |
 | `contact-form-7` (misconfig) | CVE-2026-114432 | Plugin asset `?ver=` already in the page HTML, or one GET `/wp-content/plugins/contact-form-7/readme.txt` Stable tag. High, version unconfirmed, for >= 6.2 and < 6.2.4 (6.2 through 6.2.3; fixed in 6.2.4+; 6.1.x and lower are not affected). When that version is in range, one GET `/wp-content/uploads/` (or a linked `wpcf7_uploads` folder); Critical if the response is an `Index of` autoindex listing (exposes the file-listing step behind the RCE path on stock Debian/Ubuntu Apache). Info when the plugin is present but the version is hidden. | No POST, no form submission, no file upload, no crafted or invalid-UTF-8 filenames, no attempt to fetch or execute an uploaded file, no attack payload, no malformed input. |
 | `registration-form-woocommerce` (recon) | CVE-2026-119075 | One GET `/wp-content/plugins/registration-form-for-woocommerce/readme.txt`. Critical, version unconfirmed, when that file is the ThemeGrill plugin readme and the Stable tag (or else the top Changelog version) is 1.1.4 or lower (fixed in 1.1.5). Missing or unparseable readmes are not detected. | No checkout or registration POST, no `user_roles` or `tgwcfb/user-roles` parameters, no account creation, no form submission, no write, no upload, no malformed input, and no exploit payload. |
+| `wp-duplicate` (misconfig) | CVE-2026-123751 | One GET `/wp-content/plugins/local-sync/readme.txt` (confirmed WordPress.org / WPScan slug; product formerly LocalSync). Critical, version unconfirmed, when Stable tag is 1.1.11 or lower: unauthenticated file upload / RCE, exploited in the wild, no known fix — deactivate and remove the plugin. High when the plugin readme is present but the version is unreadable. Info when a higher Stable tag is observed, for review. | Never requests upload or sync endpoints, admin-ajax actions, or alternate guessed slugs. No POST, no file upload, no auth value, no crafted parameters, no malformed input, no exploit payload. |
 
 The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
