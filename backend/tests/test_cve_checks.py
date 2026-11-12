@@ -25,6 +25,7 @@ from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
 from agents.cve_checks.amelia_pro import CHECK as AMELIA_PRO
 from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
+from agents.cve_checks.gpustack_auth import CHECK as GPUSTACK
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.wedevs import CHECK as WEDEVS
@@ -50,6 +51,12 @@ BANNED = (
     "tag%5B",
     "SLEEP(",
     "BENCHMARK(",
+    "/v2/users",
+    "/v2/api-keys",
+    "/v2/workers",
+    "/v2/inference-backends",
+    "from-yaml",
+    "X-GPUStack-Real-IP",
     "admin-ajax",
 )
 
@@ -190,6 +197,7 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/settings") == 1
     assert paths.count("/flows") == 1
     assert paths.count("/storage/v1/version") == 1
+    assert paths.count("/version") == 2  # mlflow + gpustack
     assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
@@ -202,6 +210,7 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "apikey" not in blob.lower()
     assert "multipart" not in blob.lower()
     assert "wpcf7" not in blob.lower()
+    assert "x-gpustack-real-ip" not in blob.lower()
     assert "localsync" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
@@ -1359,6 +1368,165 @@ def test_supabase_storage_check_is_get_only_and_never_sends_auth_material(monkey
         assert banned not in text
     assert "exploit" not in found[0]["title"].lower()
     assert "No JWT" in found[0]["evidence"]
+
+
+# --- GPUStack localhost auto-admin (CVE-2026-102895) ------------------------
+
+GPUSTACK_VERSION = "/version"
+
+
+def _gpustack_version_body(version: str, commit: str = "abc1234") -> str:
+    return json.dumps({"version": version, "git_commit": commit})
+
+
+def _gpustack_ui(version: str | None = None) -> str:
+    ver = f" GPUStack {version}" if version else ""
+    return (
+        "<html><head><title>GPUStack</title>"
+        "<script src=\"/js/index.js\"></script>"
+        f"<link rel=\"stylesheet\" href=\"/css/index.css\"></head>"
+        f"<body>Welcome to GPUStack{ver}</body></html>"
+    )
+
+
+def _assert_one_gpustack_get(transport):
+    assert transport.calls == [("GET", GPUSTACK_VERSION, None, False)]
+    assert {call[0] for call in transport.calls} == {"GET"}
+
+
+def test_gpustack_211_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": _gpustack_version_body("2.1.1"),
+    }
+    _install(monkeypatch, transport)
+    found = GPUSTACK.run({}, _ctx())
+    _assert_one_gpustack_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["id"] == "gpustack"
+    assert found[0]["check"]["match"] == "gpustack:2.1.1"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "GPUStack detected, version 2.1.1 < 2.2.0" in found[0]["title"]
+    assert "CVE-2026-102895" in found[0]["title"]
+    assert "likely vulnerable" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "2.2.0" in found[0]["fix"]
+    assert "force_auth_localhost=true" in found[0]["fix"]
+    assert "X-GPUStack-Real-IP" in found[0]["fix"]
+    assert "No X-GPUStack-Real-IP" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "exploit" not in found[0]["evidence"].lower()
+    assert GPUSTACK.agent == "misconfig"
+
+
+def test_gpustack_220_is_clean(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": _gpustack_version_body("2.2.0"),
+    }
+    _install(monkeypatch, transport)
+    assert GPUSTACK.run({}, _ctx(body=_gpustack_ui("2.1.1"))) == []
+    _assert_one_gpustack_get(transport)
+    transport.calls.clear()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "body": _gpustack_version_body("2.3.0"),
+    }
+    assert GPUSTACK.run({}, _ctx()) == []
+    _assert_one_gpustack_get(transport)
+
+
+def test_gpustack_unknown_version_is_informational(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {"status": 404, "body": "not found"}
+    _install(monkeypatch, transport)
+    found = GPUSTACK.run({}, _ctx(body=_gpustack_ui()))
+    _assert_one_gpustack_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "gpustack:unknown"
+    assert "GPUStack admin interface exposed" in found[0]["title"]
+    assert "confirm version >= 2.2.0" in found[0]["title"]
+    assert "force_auth_localhost=true" in found[0]["title"]
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "force_auth_localhost=true" in found[0]["fix"]
+
+
+def test_gpustack_non_gpustack_page_is_not_a_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "body": "2.1.1\n",
+    }
+    _install(monkeypatch, transport)
+    assert GPUSTACK.run({}, _ctx(body="<html><title>Welcome</title></html>")) == []
+    _assert_one_gpustack_get(transport)
+    transport.calls.clear()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": '{"version":"2.1.1","package":"Other"}',
+    }
+    assert GPUSTACK.run({}, _ctx()) == []
+    _assert_one_gpustack_get(transport)
+
+
+def test_gpustack_check_is_one_get_without_spoofed_headers(monkeypatch):
+    transport = Transport()
+    transport.routes[GPUSTACK_VERSION] = {
+        "status": 200,
+        "body": _gpustack_version_body("2.1.1"),
+    }
+    _install(monkeypatch, transport)
+    found = GPUSTACK.run({}, _ctx())
+    _assert_one_gpustack_get(transport)
+    assert len(transport.calls) == 1
+    method, path, session, follow = transport.calls[0]
+    assert method == "GET"
+    assert path == GPUSTACK_VERSION
+    assert session is None
+    assert follow is False
+    assert found and found[0]["severity"] == "critical"
+    text = (ROOT / "agents" / "cve_checks" / "gpustack_auth.py").read_text(
+        encoding="utf-8"
+    )
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, VERSION" in text
+    assert 'VERSION = "/version"' in text
+    # Probe is a bare GET through client.fetch_path — no custom headers or body.
+    assert "headers=" not in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "requests." not in text
+    # Never constructs a spoofed forwarding header as request material.
+    for banned in (
+        'X-GPUStack-Real-IP"',
+        "'X-GPUStack-Real-IP'",
+        "X-Forwarded-For:",
+        "X-Real-IP:",
+        "Forwarded:",
+        '"/v2/users"',
+        "'/v2/users'",
+        '"/v2/api-keys"',
+        "'/v2/api-keys'",
+        '"/v2/workers"',
+        "'/v2/workers'",
+        '"/v2/inference-backends"',
+        "'/v2/inference-backends'",
+        '"from-yaml"',
+        "'from-yaml'",
+        "127.0.0.1",
+    ):
+        assert banned not in text
+    assert "exploit" not in found[0]["title"].lower()
+    assert "exploit" not in found[0]["evidence"].lower()
+    assert "No X-GPUStack-Real-IP" in found[0]["evidence"]
 
 
 # --- Contact Form 7 ---------------------------------------------------------

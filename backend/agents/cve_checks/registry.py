@@ -5,6 +5,7 @@ from . import (
     amelia_pro,
     contact_form_7,
     dependency_files,
+    gpustack_auth,
     langflow,
     magento,
     metabase,
@@ -43,6 +44,7 @@ CHECKS: tuple[CveCheck, ...] = (
     contact_form_7.CHECK,
     registration_form_woocommerce.CHECK,
     wp_duplicate.CHECK,
+    gpustack_auth.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
