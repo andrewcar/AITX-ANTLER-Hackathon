@@ -10,6 +10,7 @@ from . import (
     metabase,
     mlflow_gateway,
     nextjs,
+    nextjs_nov2026,
     node_brotli,
     nodered,
     php2shell,
@@ -24,6 +25,7 @@ from .spec import CveCheck
 CHECKS: tuple[CveCheck, ...] = (
     php2shell.CHECK,
     nextjs.CHECK,
+    nextjs_nov2026.CHECK,
     node_brotli.CHECK,
     wedevs.CHECK,
     nodered.CHECK,

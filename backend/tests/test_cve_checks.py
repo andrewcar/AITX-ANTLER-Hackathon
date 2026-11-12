@@ -16,6 +16,7 @@ from agents.cve_checks.dependency_files import FILES
 from agents.cve_checks.magento import CHECK as MAGENTO
 from agents.cve_checks.metabase import CHECK as METABASE
 from agents.cve_checks.nextjs import CHECK as NEXT
+from agents.cve_checks.nextjs_nov2026 import CHECK as NEXT_NOV2026
 from agents.cve_checks.node_brotli import CHECK as BROTLI
 from agents.cve_checks.node_brotli import TITLE as BROTLI_TITLE
 from agents.cve_checks.nodered import CHECK as NODERED
@@ -290,6 +291,116 @@ def test_next_header_version_does_not_fetch_and_flags_critical(monkeypatch):
     assert UNCONFIRMED in found[0]["evidence"]
     assert "15.5.28" in found[0]["evidence"]
     assert NEXT.run({}, _ctx(headers={"x-powered-by": "Next.js", "x-nextjs-version": "16.4.1"})) == []
+
+
+# --- Next.js November 2026 (CVE-2026-119790) --------------------------------
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ((16, 4, 1), True), ((16, 4, 5), False), ((16, 5, 0), False),
+    ((15, 5, 20), True), ((15, 5, 29), False), ((15, 4, 0), True),
+    ((15, 0, 0), True), ((14, 2, 5), False), ((17, 0, 0), False),
+])
+def test_next_nov2026_version_matrix(version, vulnerable):
+    from agents.cve_checks.nextjs_nov2026 import outdated
+    assert outdated(version) is vulnerable
+
+
+def test_next_nov2026_powered_by_16_4_1_is_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Next.js 16.4.1"}))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-119790" in found[0]["evidence"]
+    assert "GHSA-mfr8-8qww-v76h" in found[0]["evidence"]
+    assert "16.4.5" in found[0]["evidence"]
+
+
+def test_next_nov2026_powered_by_16_4_5_has_no_version_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Next.js 16.4.5"})) == []
+    assert transport.calls == []
+
+
+def test_next_nov2026_powered_by_15_5_20_is_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Next.js 15.5.20"}))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert UNCONFIRMED in found[0]["title"]
+    assert "15.5.29" in found[0]["evidence"]
+    assert "CVE-2026-119351" in found[0]["evidence"]
+
+
+def test_next_nov2026_powered_by_15_5_29_has_no_version_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Next.js 15.5.29"})) == []
+    assert transport.calls == []
+
+
+def test_next_nov2026_markers_without_version_are_info_only(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = '<div id="__next"></div><script>self.__NEXT_DATA__={}</script>'
+    found = NEXT_NOV2026.run({}, _ctx(body=html))
+    assert [call[1] for call in transport.calls] == ["/package.json"]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["title"] == "Next.js detected; verify Nov 2026 security release"
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "definitely vulnerable" not in found[0]["evidence"].lower()
+    assert "CVE-2026-119790" in found[0]["evidence"]
+
+
+def test_next_nov2026_non_next_site_is_silent(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert NEXT_NOV2026.run({}, _ctx(headers={"x-powered-by": "Express"}, body="<html></html>")) == []
+    assert transport.calls == []
+
+
+def test_next_nov2026_package_json_version_when_header_hidden(monkeypatch):
+    transport = Transport()
+    transport.routes["/package.json"] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": json.dumps({"dependencies": {"next": "16.4.1", "react": "19.0.0"}}),
+    }
+    _install(monkeypatch, transport)
+    found = NEXT_NOV2026.run({}, _ctx(body='/_next/static/chunks/main.js'))
+    assert [call[1] for call in transport.calls] == ["/package.json"]
+    assert len(found) == 1
+    assert "16.4.1" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
+
+
+def test_next_nov2026_uses_cached_package_json_without_fetch(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body='/_next/static/chunks/main.js')
+    ctx.recon_root["package_json"] = json.dumps({
+        "devDependencies": {"next": "^15.5.20"},
+    })
+    found = NEXT_NOV2026.run({}, ctx)
+    assert transport.calls == []
+    assert len(found) == 1
+    assert "15.5.20" in found[0]["title"]
+
+
+def test_next_nov2026_does_not_request_build_manifest(monkeypatch):
+    transport = Transport()
+    transport.routes["/package.json"] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    html = '<script src="/_next/static/abc123/pages/index.js"></script>'
+    NEXT_NOV2026.run({}, _ctx(body=html))
+    paths = [call[1] for call in transport.calls]
+    assert paths == ["/package.json"]
+    assert all("_buildManifest" not in path for path in paths)
 
 
 # --- Node Brotli ------------------------------------------------------------
