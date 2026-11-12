@@ -17,6 +17,7 @@ from . import (
     nodered,
     php2shell,
     registration_form_woocommerce,
+    slicewp,
     supabase_storage,
     vite_dev_server,
     wedevs,
@@ -51,6 +52,7 @@ CHECKS: tuple[CveCheck, ...] = (
     vite_dev_server.CHECK,
     latepoint.CHECK,
     xen_orchestra.CHECK,
+    slicewp.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
