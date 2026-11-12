@@ -35,6 +35,7 @@ from agents.cve_checks.vite_dev_server import TITLE as VITE_TITLE
 from agents.cve_checks.vite_dev_server import affected_vite, affected_vite_plus
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
+from agents.cve_checks.xen_orchestra import CHECK as XEN_ORCHESTRA
 from agents.cve_checks.wp_duplicate import CHECK as WP_DUPLICATE
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
 import planner
@@ -217,11 +218,16 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     assert paths.count("/wp-content/uploads/") == 0
+    # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
+    assert paths.count("/") == 2
     assert paths.count(VITE_CLIENT) == 1
     assert "/api/v1/mcp" not in paths
     assert "/api/v1/auto_login" not in paths
     assert "/wp-json/pm/v2" not in paths
     assert "/_next/" not in blob
+    assert "/rest/" not in blob
+    assert "/rest/v0" not in blob
+    assert "authenticationtoken" not in blob.lower()
     assert "/@fs/" not in blob
     assert "/@id/" not in blob
     assert "x-amz-copy-source" not in blob.lower()
@@ -2808,3 +2814,185 @@ def test_latepoint_check_source_is_get_only_readme_fingerprint():
     assert "Never requests admin-ajax.php" in text
     assert "customer_cabinet__change_password" in text
     assert "params[password_reset_token]" in text
+
+# --- Xen Orchestra (VSA-2026-062) -------------------------------------------
+
+XO_SIGNIN = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Xen Orchestra</title>
+  <meta name="author" content="Vates SAS">
+  <link rel="stylesheet" href="/v5/index.css">
+  <link rel="icon" href="/v5/assets/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <img src="/v5/assets/logo.svg">
+  <h2>Welcome to</h2>
+  <form action="signin/local" method="post">
+    <input name="username" type="text">
+    <input name="password" type="password">
+    <button>Sign in with password</button>
+  </form>
+</body>
+</html>
+"""
+
+XO_FIXED_SERVER = (
+    XO_SIGNIN.replace("</title>", "</title>\n  <!-- xo-server/5.213.1 -->")
+)
+XO_VULN_SERVER = (
+    XO_SIGNIN.replace("</title>", "</title>\n  <!-- xo-server/5.213.0 -->")
+)
+XO_FIXED_PRODUCT = (
+    XO_SIGNIN.replace("</title>", "</title>\n  <!-- Xen Orchestra 6.10.1 -->")
+)
+XO_VULN_PRODUCT = (
+    XO_SIGNIN.replace("</title>", "</title>\n  <!-- Xen Orchestra 6.10.0 -->")
+)
+
+
+def test_xen_orchestra_login_without_version_is_high_exposure(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = XEN_ORCHESTRA.run({}, _ctx(body=XO_SIGNIN))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["id"] == "xen-orchestra"
+    assert found[0]["check"]["match"] == "xen-orchestra:exposure"
+    assert found[0]["confidence"] == "needs verification"
+    assert "publicly reachable" in found[0]["title"].lower()
+    assert "5.211.2" in found[0]["title"]
+    assert "5.213.1" in found[0]["title"]
+    assert "needs verification" in found[0]["evidence"].lower()
+    assert "authenticationToken" in found[0]["evidence"]
+    assert "/rest/v0" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+
+
+def test_xen_orchestra_vulnerable_xo_server_version_is_critical(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = XEN_ORCHESTRA.run({}, _ctx(body=XO_VULN_SERVER))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert UNCONFIRMED in found[0]["title"]
+    assert found[0]["check"]["match"] == "xen-orchestra:xo-server:5.213.0"
+    assert "5.213.0" in found[0]["evidence"]
+    assert "VSA-2026-062" in found[0]["evidence"]
+
+
+def test_xen_orchestra_vulnerable_product_version_is_critical(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = XEN_ORCHESTRA.run({}, _ctx(body=XO_VULN_PRODUCT))
+    assert transport.calls == []
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "xen-orchestra:product:6.10.0"
+
+
+@pytest.mark.parametrize("body", [XO_FIXED_SERVER, XO_FIXED_PRODUCT])
+def test_xen_orchestra_fixed_version_is_not_a_vuln_finding(monkeypatch, body):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert XEN_ORCHESTRA.run({}, _ctx(body=body)) == []
+    assert transport.calls == []
+
+
+def test_xen_orchestra_non_xo_page_is_none(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    html = "<html><title>Dashboard</title><body>hello</body></html>"
+    assert XEN_ORCHESTRA.run({}, _ctx(body=html)) == []
+    assert transport.calls == []
+
+
+def test_xen_orchestra_empty_root_falls_back_to_one_get(monkeypatch):
+    transport = Transport()
+    transport.routes["/"] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": XO_SIGNIN,
+    }
+    _install(monkeypatch, transport)
+    found = XEN_ORCHESTRA.run({}, _ctx(body=""))
+    assert transport.calls == [("GET", "/", None, False)]
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "xen-orchestra:exposure"
+    assert "GET /" in found[0]["evidence"]
+
+
+def test_xen_orchestra_never_sends_auth_cookie_or_rest(monkeypatch):
+    transport = Transport()
+    transport.routes["/"] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": XO_SIGNIN,
+    }
+    _install(monkeypatch, transport)
+    found = XEN_ORCHESTRA.run({}, _ctx(body=""))
+    assert transport.calls == [("GET", "/", None, False)]
+    paths = [call[1] for call in transport.calls]
+    assert all("/rest" not in path for path in paths)
+    assert all("/api" not in path for path in paths)
+    text = (ROOT / "agents" / "cve_checks" / "xen_orchestra.py").read_text(
+        encoding="utf-8"
+    )
+    assert "fetch_path(ctx, ROOT" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    # Documentation may name the banned cookie; the check must never set one.
+    assert "authenticationToken=" not in text
+    assert "Set-Cookie" not in text
+    assert XEN_ORCHESTRA.agent == "misconfig"
+    assert found and found[0]["severity"] == "high"
+    # Transport records only path/session/follow — session must stay None.
+    assert all(call[2] is None for call in transport.calls)
+
+
+def test_xen_orchestra_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host("https://xo.attacker.example/")
+    assert "allowlist" in str(exc.value)
+
+
+def test_xen_orchestra_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_xo_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                XEN_ORCHESTRA.run({}, _ctx(body=""))
+    finally:
+        control.release(lease.run_id)
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ((5, 211, 1), True), ((5, 211, 2), False), ((5, 211, 3), False),
+    ((5, 213, 0), True), ((5, 213, 1), False), ((5, 212, 0), True),
+    ((5, 210, 9), True), ((5, 214, 0), False),
+])
+def test_xen_orchestra_xo_server_version_matrix(version, vulnerable):
+    from agents.cve_checks.xen_orchestra import below_fix
+    assert below_fix("xo-server", version) is vulnerable
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ((6, 9, 1), True), ((6, 9, 2), False),
+    ((6, 10, 0), True), ((6, 10, 1), False),
+    ((6, 8, 0), True), ((6, 11, 0), False),
+])
+def test_xen_orchestra_product_version_matrix(version, vulnerable):
+    from agents.cve_checks.xen_orchestra import below_fix
+    assert below_fix("product", version) is vulnerable

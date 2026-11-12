@@ -22,6 +22,7 @@ from . import (
     wedevs,
     wordpress,
     wp_duplicate,
+    xen_orchestra,
     yootheme,
 )
 from .spec import CveCheck
@@ -49,6 +50,7 @@ CHECKS: tuple[CveCheck, ...] = (
     gpustack_auth.CHECK,
     vite_dev_server.CHECK,
     latepoint.CHECK,
+    xen_orchestra.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
