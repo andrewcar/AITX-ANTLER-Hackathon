@@ -14,6 +14,7 @@ from . import (
     node_brotli,
     nodered,
     php2shell,
+    registration_form_woocommerce,
     supabase_storage,
     wedevs,
     wordpress,
@@ -39,6 +40,7 @@ CHECKS: tuple[CveCheck, ...] = (
     supabase_storage.CHECK,
     amelia_pro.CHECK,
     contact_form_7.CHECK,
+    registration_form_woocommerce.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
