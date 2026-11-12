@@ -11,12 +11,15 @@ from . import (
     metabase,
     mlflow_gateway,
     nextjs,
+    nextjs_nov2026,
     node_brotli,
     nodered,
     php2shell,
+    registration_form_woocommerce,
     supabase_storage,
     wedevs,
     wordpress,
+    wp_duplicate,
     yootheme,
 )
 from .spec import CveCheck
@@ -25,6 +28,7 @@ from .spec import CveCheck
 CHECKS: tuple[CveCheck, ...] = (
     php2shell.CHECK,
     nextjs.CHECK,
+    nextjs_nov2026.CHECK,
     node_brotli.CHECK,
     wedevs.CHECK,
     nodered.CHECK,
@@ -38,6 +42,8 @@ CHECKS: tuple[CveCheck, ...] = (
     supabase_storage.CHECK,
     amelia_pro.CHECK,
     contact_form_7.CHECK,
+    registration_form_woocommerce.CHECK,
+    wp_duplicate.CHECK,
     gpustack_auth.CHECK,
 )
 
