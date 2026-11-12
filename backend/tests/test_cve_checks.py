@@ -28,6 +28,7 @@ from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
 from agents.cve_checks.latepoint import CHECK as LATEPOINT
 from agents.cve_checks.gpustack_auth import CHECK as GPUSTACK
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
+from agents.cve_checks.slicewp import CHECK as SLICEWP
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.vite_dev_server import CHECK as VITE_DEV
 from agents.cve_checks.vite_dev_server import CLIENT_PATH as VITE_CLIENT
@@ -73,6 +74,8 @@ BANNED = (
     "from-yaml",
     "X-GPUStack-Real-IP",
     "admin-ajax",
+    "/my-account",
+    "woocommerce-register",
 )
 
 
@@ -217,6 +220,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
     assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
+    # SliceWP only probes readme when the plugin path was already in crawled HTML.
+    assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
     assert paths.count("/") == 2
@@ -238,6 +243,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "is not null" not in blob.lower()
     assert "x-gpustack-real-ip" not in blob.lower()
     assert "localsync" not in blob.lower()
+    assert "slicewp" not in blob.lower()
+    assert "my-account" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2996,3 +3003,192 @@ def test_xen_orchestra_xo_server_version_matrix(version, vulnerable):
 def test_xen_orchestra_product_version_matrix(version, vulnerable):
     from agents.cve_checks.xen_orchestra import below_fix
     assert below_fix("product", version) is vulnerable
+
+
+# --- SliceWP (CVE-2026-120043) ----------------------------------------------
+
+SLICEWP_README = "/wp-content/plugins/slicewp/readme.txt"
+_SLICEWP_BANNED = (
+    "/my-account",
+    "/my-account/",
+    "woocommerce-register",
+    "user_register",
+    "wp-login.php",
+    "email=",
+    "SLEEP(",
+    "BENCHMARK(",
+    "UNION SELECT",
+    "' OR ",
+)
+
+
+def _slicewp_asset_html(version: str | None = None) -> str:
+    if version is None:
+        return (
+            '<script src="/wp-content/plugins/slicewp/assets/js/script.js">'
+            "</script>"
+            '<link rel="stylesheet" href="/wp-content/plugins/slicewp/'
+            'assets/css/style.css" />'
+        )
+    return (
+        f'<script src="/wp-content/plugins/slicewp/assets/js/script.js'
+        f'?ver={version}"></script>'
+        f'<link rel="stylesheet" href="/wp-content/plugins/slicewp/'
+        f'assets/css/style.css?ver={version}" />'
+    )
+
+
+def _slicewp_readme(stable: str) -> str:
+    return (
+        "=== Affiliate Program Suite - SliceWP Affiliates ===\n"
+        f"Stable tag: {stable}\n"
+        "Contributors: slicewp\n"
+        "Requires at least: 5.0\n\n"
+        "SliceWP is an affiliate program suite for WordPress.\n"
+    )
+
+
+def _assert_slicewp_passive(transport):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths)
+    for banned in _SLICEWP_BANNED:
+        assert banned.lower() not in blob.lower()
+    for path in paths:
+        assert path == SLICEWP_README
+    assert paths.count(SLICEWP_README) <= 1
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("1.2.14", True), ("1.2.13", True), ("1.2.10", True), ("1.0.0", True),
+    ("1.2.15", False), ("1.2.16", False), ("1.3.0", False), ("2.0.0", False),
+])
+def test_slicewp_version_matrix(version, vulnerable):
+    from agents.cve_checks.slicewp import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_slicewp_asset_ver_1214_is_critical_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = SLICEWP.run({}, _ctx(body=_slicewp_asset_html("1.2.14")))
+    assert transport.calls == []
+    assert SLICEWP.agent == "misconfig"
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "slicewp:1.2.14"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-120043" in found[0]["title"]
+    assert "CVE-2026-120043" in found[0]["evidence"]
+    assert "1.2.15" in found[0]["fix"]
+    assert "WooCommerce My Account registration" in found[0]["evidence"]
+    assert "does not confirm" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "not CISA KEV" in found[0]["evidence"]
+
+
+def test_slicewp_1215_and_130_are_not_flagged(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert SLICEWP.run({}, _ctx(body=_slicewp_asset_html("1.2.15"))) == []
+    assert SLICEWP.run({}, _ctx(body=_slicewp_asset_html("1.3.0"))) == []
+    assert transport.calls == []
+
+
+def test_slicewp_readme_fallback_1210_is_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[SLICEWP_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _slicewp_readme("1.2.10"),
+    }
+    _install(monkeypatch, transport)
+    found = SLICEWP.run({}, _ctx(body=_slicewp_asset_html(None)))
+    _assert_slicewp_passive(transport)
+    assert [call[1] for call in transport.calls] == [SLICEWP_README]
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "slicewp:1.2.10"
+    assert "CVE-2026-120043" in found[0]["evidence"]
+    assert "1.2.15" in found[0]["fix"]
+
+
+def test_slicewp_plugin_present_no_version_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[SLICEWP_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": (
+            "=== Affiliate Program Suite - SliceWP Affiliates ===\n"
+            "Contributors: slicewp\n"
+            "Requires at least: 5.0\n\n"
+            "SliceWP is an affiliate program suite for WordPress.\n"
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = SLICEWP.run({}, _ctx(body=_slicewp_asset_html(None)))
+    _assert_slicewp_passive(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "slicewp:unknown"
+    assert "CVE-2026-120043" in found[0]["title"]
+
+
+def test_slicewp_absent_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[SLICEWP_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _slicewp_readme("1.2.10"),
+    }
+    transport.routes["/my-account/"] = {"status": 200, "body": "register"}
+    _install(monkeypatch, transport)
+    assert SLICEWP.run({}, _ctx(body="<html><body>hello</body></html>")) == []
+    assert transport.calls == []
+
+
+def test_slicewp_at_most_one_readme_get_and_never_registration(monkeypatch):
+    transport = Transport()
+    transport.routes[SLICEWP_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _slicewp_readme("1.2.14"),
+    }
+    transport.routes["/my-account/"] = {"status": 200, "body": "register form"}
+    transport.routes["/my-account/?action=register"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = SLICEWP.run({}, _ctx(body=_slicewp_asset_html(None)))
+    _assert_slicewp_passive(transport)
+    assert [call[1] for call in transport.calls] == [SLICEWP_README]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "my-account" not in blob
+    assert "register" not in blob
+    assert "email" not in blob
+
+
+def test_slicewp_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://slicewp.attacker.example/wp-content/plugins/slicewp/readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_slicewp_check_source_is_get_only_static_fingerprint():
+    text = (ROOT / "agents" / "cve_checks" / "slicewp.py").read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "my-account" in text.lower()
+    assert "Never requests" in text or "never requests" in text.lower()
+    assert SLICEWP.agent == "misconfig"
+    assert SLICEWP.cve == "CVE-2026-120043"
+    assert "1.2.15" in SLICEWP.fixed
