@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from . import (
     amelia_pro,
+    commerce_core,
     contact_form_7,
     dependency_files,
     gpustack_auth,
@@ -53,6 +54,7 @@ CHECKS: tuple[CveCheck, ...] = (
     latepoint.CHECK,
     xen_orchestra.CHECK,
     slicewp.CHECK,
+    commerce_core.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]

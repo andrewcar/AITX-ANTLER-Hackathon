@@ -29,6 +29,7 @@ from agents.cve_checks.latepoint import CHECK as LATEPOINT
 from agents.cve_checks.gpustack_auth import CHECK as GPUSTACK
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.slicewp import CHECK as SLICEWP
+from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.vite_dev_server import CHECK as VITE_DEV
 from agents.cve_checks.vite_dev_server import CLIENT_PATH as VITE_CLIENT
@@ -222,6 +223,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     # SliceWP only probes readme when the plugin path was already in crawled HTML.
     assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
+    # Commerce Core only probes info.yml when Drupal + Commerce markup are present.
+    assert paths.count("/modules/contrib/commerce/commerce.info.yml") == 0
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
     assert paths.count("/") == 2
@@ -245,6 +248,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "localsync" not in blob.lower()
     assert "slicewp" not in blob.lower()
     assert "my-account" not in blob.lower()
+    assert "commerce.info.yml" not in blob.lower()
+    assert "jsonapi" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -3192,3 +3197,257 @@ def test_slicewp_check_source_is_get_only_static_fingerprint():
     assert SLICEWP.agent == "misconfig"
     assert SLICEWP.cve == "CVE-2026-120043"
     assert "1.2.15" in SLICEWP.fixed
+
+
+# --- Drupal Commerce Core (CVE-2026-118539 / SA-CONTRIB-2026-254) ------------
+
+COMMERCE_INFO = "/modules/contrib/commerce/commerce.info.yml"
+_COMMERCE_BANNED = (
+    "/jsonapi/",
+    "jsonapi",
+    "/cart/add",
+    "checkout",
+    "PATCH",
+    "add-to-cart",
+    "commerce_order",
+    "order_items",
+)
+
+
+def _drupal_commerce_html(extra="", generator=True, settings=True):
+    parts = ['<html><head>']
+    if generator:
+        parts.append(
+            '<meta name="Generator" content="Drupal 10 (https://www.drupal.org)" />'
+        )
+    parts.append("</head><body>")
+    if settings:
+        parts.append("<script>window.drupalSettings = {};</script>")
+    parts.append(extra)
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+def _commerce_markup():
+    return (
+        '<div class="commerce-cart-block block-commerce-cart">'
+        '<a href="/cart">View cart</a></div>'
+        '<div class="commerce-product">widget</div>'
+    )
+
+
+def _commerce_info_yml(version):
+    return (
+        "name: Commerce\n"
+        "type: module\n"
+        "description: 'Drupal Commerce'\n"
+        "package: Commerce\n"
+        "core_version_requirement: '^9 || ^10 || ^11'\n"
+        f"version: '{version}'\n"
+        "project: 'commerce'\n"
+        "datestamp: 1730000000\n"
+    )
+
+
+def _assert_commerce_passive(transport):
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    assert paths.count(COMMERCE_INFO) <= 1
+    blob = " ".join(paths).lower()
+    for banned in _COMMERCE_BANNED:
+        assert banned.lower() not in blob
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("3.3.12", True), ("3.3.0", True), ("3.0.0", True), ("3.3.13", False),
+    ("3.3.14", False), ("3.4.0", False),
+    ("8.x-2.40", True), ("8.x-2.0", True), ("2.40", True), ("2.40.0", True),
+    ("8.x-2.41", False), ("2.41", False), ("2.41.0", False), ("2.42.0", False),
+    ("1.0.0", True), ("4.0.0", False),
+])
+def test_commerce_core_version_matrix(version, vulnerable):
+    from agents.cve_checks.commerce_core import affected, parse_commerce_version
+    parsed = parse_commerce_version(version)
+    assert parsed is not None
+    assert bool(affected(parsed)) is vulnerable
+
+
+@pytest.mark.parametrize("tag,flagged", [
+    ("3.3.12", True),
+    ("3.3.13", False),
+    ("8.x-2.40", True),
+    ("8.x-2.41", False),
+])
+def test_commerce_core_info_yml_version_matrix(monkeypatch, tag, flagged):
+    transport = Transport()
+    transport.routes[COMMERCE_INFO] = {
+        "status": 200,
+        "content_type": "text/yaml",
+        "body": _commerce_info_yml(tag),
+    }
+    _install(monkeypatch, transport)
+    body = _drupal_commerce_html(_commerce_markup())
+    found = COMMERCE_CORE.run({}, _ctx(
+        headers={"x-generator": "Drupal 10 (https://www.drupal.org)"},
+        body=body,
+    ))
+    _assert_commerce_passive(transport)
+    assert [call[1] for call in transport.calls] == [COMMERCE_INFO]
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-118539" in found[0]["title"]
+        assert "CVE-2026-118539" in found[0]["evidence"]
+        assert "SA-CONTRIB-2026-254" in found[0]["evidence"]
+        assert "not CISA KEV" in found[0]["evidence"]
+        assert "3.3.13" in found[0]["fix"]
+        assert "8.x-2.41" in found[0]["fix"]
+        assert "exploit" not in found[0]["title"].lower()
+        assert "exploits" not in found[0]["evidence"].lower().replace(
+            "exploitation", ""
+        )
+    else:
+        assert found == []
+
+
+def test_commerce_core_info_yml_403_with_markup_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[COMMERCE_INFO] = {
+        "status": 403,
+        "content_type": "text/plain",
+        "body": "Forbidden",
+    }
+    _install(monkeypatch, transport)
+    found = COMMERCE_CORE.run({}, _ctx(
+        headers={"x-generator": "Drupal 10 (https://www.drupal.org)"},
+        body=_drupal_commerce_html(_commerce_markup()),
+    ))
+    _assert_commerce_passive(transport)
+    assert [call[1] for call in transport.calls] == [COMMERCE_INFO]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "commerce-core:unknown"
+    assert "low confidence" in found[0]["evidence"]
+    assert "3.3.13" in found[0]["evidence"]
+    assert "8.x-2.41" in found[0]["evidence"]
+    assert "audit orders" in found[0]["evidence"]
+    assert "CVE-2026-118539" in found[0]["title"]
+
+
+def test_commerce_core_non_drupal_is_skipped(monkeypatch):
+    transport = Transport()
+    transport.routes[COMMERCE_INFO] = {
+        "status": 200,
+        "content_type": "text/yaml",
+        "body": _commerce_info_yml("3.3.12"),
+    }
+    transport.routes["/cart"] = {"status": 200, "body": "cart"}
+    transport.routes["/jsonapi/commerce_order/commerce_order"] = {
+        "status": 200, "body": "{}",
+    }
+    _install(monkeypatch, transport)
+    assert COMMERCE_CORE.run({}, _ctx(
+        body='<html><body><a href="/cart">cart</a>'
+             '<div class="commerce-product"></div></body></html>',
+    )) == []
+    assert transport.calls == []
+
+
+def test_commerce_core_drupal_without_commerce_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[COMMERCE_INFO] = {
+        "status": 200,
+        "content_type": "text/yaml",
+        "body": _commerce_info_yml("3.3.12"),
+    }
+    _install(monkeypatch, transport)
+    assert COMMERCE_CORE.run({}, _ctx(
+        headers={"x-generator": "Drupal 10 (https://www.drupal.org)"},
+        body=_drupal_commerce_html("<p>Hello</p>"),
+    )) == []
+    assert transport.calls == []
+
+
+def test_commerce_core_reuses_composer_lock_version_from_findings(monkeypatch):
+    transport = Transport()
+    transport.routes[COMMERCE_INFO] = {
+        "status": 200,
+        "content_type": "text/yaml",
+        "body": _commerce_info_yml("3.3.12"),
+    }
+    _install(monkeypatch, transport)
+    ctx = _ctx(
+        headers={"x-generator": "Drupal 10 (https://www.drupal.org)"},
+        body=_drupal_commerce_html(_commerce_markup()),
+    )
+    ctx.findings = [{
+        "title": "Exposed dependency file: /composer.lock",
+        "evidence": (
+            'GET /composer.lock -> 200. {"packages":[{"name":"drupal/commerce",'
+            '"version":"3.3.12","source":{}}]}'
+        ),
+        "check": {"match": "exposed:/composer.lock"},
+    }]
+    found = COMMERCE_CORE.run({}, ctx)
+    assert transport.calls == []
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "commerce-core:3.3.12"
+    assert "composer.lock" in found[0]["evidence"]
+
+
+def test_commerce_core_at_most_one_info_yml_get_and_never_mutates(monkeypatch):
+    transport = Transport()
+    transport.routes[COMMERCE_INFO] = {
+        "status": 200,
+        "content_type": "text/yaml",
+        "body": _commerce_info_yml("8.x-2.40"),
+    }
+    transport.routes["/cart"] = {"status": 200, "body": "should-never-be-fetched"}
+    transport.routes["/cart/add"] = {"status": 200, "body": "nope"}
+    transport.routes["/checkout"] = {"status": 200, "body": "nope"}
+    transport.routes["/jsonapi/commerce_order/commerce_order"] = {
+        "status": 200, "body": "{}",
+    }
+    _install(monkeypatch, transport)
+    found = COMMERCE_CORE.run({}, _ctx(
+        headers={"x-generator": "Drupal 10 (https://www.drupal.org)"},
+        body=_drupal_commerce_html(_commerce_markup()),
+    ))
+    _assert_commerce_passive(transport)
+    assert [call[1] for call in transport.calls] == [COMMERCE_INFO]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "commerce-core:8.x-2.40"
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "jsonapi" not in blob
+    assert "/cart" not in blob
+    assert "checkout" not in blob
+
+
+def test_commerce_core_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://commerce.attacker.example/modules/contrib/commerce/"
+            "commerce.info.yml"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_commerce_core_check_source_is_get_only_static_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "commerce_core.py"
+    ).read_text(encoding="utf-8")
+    assert "fetch_path(ctx, INFO_YML" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "Never adds to cart" in text or "never adds to cart" in text.lower()
+    assert "JSON:API" in text or "jsonapi" in text.lower()
+    assert COMMERCE_CORE.agent == "misconfig"
+    assert COMMERCE_CORE.cve == "CVE-2026-118539"
+    assert "3.3.13" in COMMERCE_CORE.fixed
+    assert "8.x-2.41" in COMMERCE_CORE.fixed
