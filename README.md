@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (362 test functions).
+- **Tests:** `pytest` (396 test functions).
 
 ## Architecture
 
@@ -94,6 +94,7 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | `xen-orchestra` (misconfig) | VSA-2026-062 | Reuses the recon root response, or one GET `/` when that body is empty. Fingerprints the Xen Orchestra login UI (title/app name `Xen Orchestra`, XO5 `/v5/` and XO6 `/v6/` asset paths from upstream). High when the management interface is publicly reachable without a version (confidence: needs verification — confirm xo-server >= 5.211.2 stable / >= 5.213.1 latest and move behind a VPN). Critical only when a passively shown xo-server or product version is below the advisory fix (xo-server 5.211.2 / 5.213.1; product/XOA 6.9.2 / 6.10.1). | Never sends an `authenticationToken` cookie (including `j:{}` / `j:%7B%7D`). Never requests `/rest/v0/*` or `/api/*`. No login attempt, websocket, JSON-RPC, header/cookie manipulation, authenticated request, or write. |
 | `slicewp` (misconfig) | CVE-2026-120043 | Plugin asset `?ver=` already in the page HTML. When the plugin path is present without a version, one GET `/wp-content/plugins/slicewp/readme.txt` Stable tag. Critical, version unconfirmed, for SliceWP through 1.2.14 (fixed in 1.2.15; WordPress.org changelog: additional variable escaping). Patchstack priority 9.3 and known-exploited (Patchstack telemetry, not CISA KEV); Wordfence CVSS 7.5. Info when the plugin is present but the version is hidden. Plugin absent from crawled HTML yields no request. Notes that exposure requires public WooCommerce My Account registration, which this check does not confirm. | Never requests `/my-account/` or any registration endpoint. No POSTs or form submissions, no account creation, no `email` or other parameters, no SQL/quote/timing payloads, no nonce fetching, no malformed input, no uploads, no writes, no brute force, and never more than the single readme GET. |
 | `wp-data-access` (misconfig) | CVE-2026-118267 | Confirm WordPress from the already-fetched root response, then one GET `/wp-content/plugins/wp-data-access/readme.txt`. High, version unconfirmed, when the Stable tag (or latest changelog version) is through 5.5.89 (fixed in 5.5.90). Patchstack known-exploited (Patchstack telemetry, not CISA KEV). Info (present, version unknown, low confidence) when the plugin readme is present but the version is unparseable. Non-WordPress targets are skipped with no request. Notes that unauthenticated exposure depends on Data App config (anonymous writes), which this check does not confirm. | Never requests `wpda/app` REST endpoints (`update`, `delete`, `insert`) or any key/value parameters. No login, registration, POST, form submission, upload, write, or malformed input. |
+| `apache-mod-http2` (misconfig) | CVE-2026-119618 | Nothing extra. Reads `Apache/2.4.x` from the `Server` header already on the root response, and notes HTTP/2 when that response already shows it (negotiated protocol, `Upgrade: h2c`, or `Alt-Svc`). Likely vulnerable for 2.4.55–2.4.70 (fixed in 2.4.71): high when HTTP/2 was visible, medium otherwise. Notes that distro packages often backport fixes without changing the version string. Bare `Server: Apache` (no version) and non-Apache servers yield no finding. | No extra request. No raw sockets, no custom HTTP/2 frames, no concurrent or parallel streams, no race trigger, no malformed frames, no POST, no auth bypass, no exploit payload. |
 
 The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
@@ -125,7 +126,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (362 test functions in `backend/tests/`):
+Tests (396 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q
