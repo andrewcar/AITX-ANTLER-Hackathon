@@ -22,6 +22,7 @@ from . import (
     vite_dev_server,
     wedevs,
     wordpress,
+    wp_data_access,
     wp_duplicate,
     xen_orchestra,
     yootheme,
@@ -53,6 +54,7 @@ CHECKS: tuple[CveCheck, ...] = (
     latepoint.CHECK,
     xen_orchestra.CHECK,
     slicewp.CHECK,
+    wp_data_access.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
