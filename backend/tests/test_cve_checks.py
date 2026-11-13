@@ -79,6 +79,10 @@ BANNED = (
     "admin-ajax",
     "/my-account",
     "woocommerce-register",
+    "wpda/app",
+    "wpda/app/update",
+    "wpda/app/delete",
+    "wpda/app/insert",
 )
 
 
