@@ -38,6 +38,7 @@ from agents.cve_checks.vite_dev_server import affected_vite, affected_vite_plus
 from agents.cve_checks.wedevs import CHECK as WEDEVS
 from agents.cve_checks.wordpress import CHECK as WORDPRESS
 from agents.cve_checks.xen_orchestra import CHECK as XEN_ORCHESTRA
+from agents.cve_checks.wp_data_access import CHECK as WP_DATA_ACCESS
 from agents.cve_checks.wp_duplicate import CHECK as WP_DUPLICATE
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
 import planner
@@ -77,6 +78,10 @@ BANNED = (
     "admin-ajax",
     "/my-account",
     "woocommerce-register",
+    "wpda/app",
+    "wpda/app/update",
+    "wpda/app/delete",
+    "wpda/app/insert",
 )
 
 
@@ -223,6 +228,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     # SliceWP only probes readme when the plugin path was already in crawled HTML.
     assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
+    # WP Data Access only probes readme after WordPress is confirmed from root HTML.
+    assert paths.count("/wp-content/plugins/wp-data-access/readme.txt") == 0
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
     assert paths.count("/") == 2
@@ -245,6 +252,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "x-gpustack-real-ip" not in blob.lower()
     assert "localsync" not in blob.lower()
     assert "slicewp" not in blob.lower()
+    assert "wp-data-access" not in blob.lower()
+    assert "wpda/app" not in blob.lower()
     assert "my-account" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
@@ -3193,6 +3202,237 @@ def test_slicewp_check_source_is_get_only_static_fingerprint():
     assert SLICEWP.agent == "misconfig"
     assert SLICEWP.cve == "CVE-2026-120043"
     assert "1.2.15" in SLICEWP.fixed
+
+
+# --- WP Data Access (CVE-2026-118267) ---------------------------------------
+
+WPDA_README = "/wp-content/plugins/wp-data-access/readme.txt"
+_WP_ROOT = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="https://api.w.org/" href="http://127.0.0.1:8081/wp-json/" />'
+)
+
+
+def _wpda_readme(tag=None, *, changelog=None, name="WP Data Access"):
+    lines = [
+        f"=== {name} ===",
+        "Contributors: wpdataaccess",
+        "Requires at least: 5.0",
+        "Tested up to: 6.8",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "WP Data Access is a WordPress database and App Builder plugin.",
+        "",
+        "== Changelog ==",
+        "",
+    ])
+    if changelog is not None:
+        lines.append(f"= {changelog} =")
+        lines.append("* Security and maintenance release.")
+    elif tag is not None:
+        lines.append(f"= {tag} =")
+        lines.append("* Release notes.")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_wpda_readme_get_only(transport):
+    assert [call[0] for call in transport.calls] == ["GET"]
+    assert [call[1] for call in transport.calls] == [WPDA_README]
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    for banned in (
+        "wpda/app",
+        "wpda/app/update",
+        "wpda/app/delete",
+        "wpda/app/insert",
+        "wp-login",
+        "wp-register",
+        "admin-ajax.php",
+    ):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag,vulnerable", [
+    ("5.5.89", True),
+    ("5.5.88", True),
+    ("5.0.0", True),
+    ("5.5.90", False),
+    ("5.5.91", False),
+    ("5.6.0", False),
+])
+def test_wp_data_access_version_matrix(tag, vulnerable):
+    from agents.cve_checks.wp_data_access import affected
+    from agents.cve_checks.versions import parse_dotted
+
+    assert bool(affected(parse_dotted(tag))) is vulnerable
+
+
+@pytest.mark.parametrize("tag,flagged", [
+    ("5.5.89", True),
+    ("5.5.90", False),
+    ("5.6.0", False),
+])
+def test_wp_data_access_readme_stable_tag(monkeypatch, tag, flagged):
+    transport = Transport()
+    transport.routes[WPDA_README] = {
+        "status": 200, "content_type": "text/plain", "body": _wpda_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DATA_ACCESS.run({}, _ctx(body=_WP_ROOT))
+    _assert_wpda_readme_get_only(transport)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "high"
+        assert UNCONFIRMED in found[0]["title"]
+        assert found[0]["check"]["match"] == f"wp-data-access:{tag}"
+        assert "CVE-2026-118267" in found[0]["evidence"]
+        assert "Patchstack telemetry, not CISA KEV" in found[0]["evidence"]
+        assert "Data App" in found[0]["evidence"]
+        assert "wpda/app" in found[0]["evidence"]
+        assert "does not confirm" in found[0]["evidence"]
+        assert "exploit" not in found[0]["title"].lower()
+        assert "we exploit" not in found[0]["evidence"].lower()
+        assert "No wpda/app" in found[0]["evidence"] or "no wpda/app" in found[0]["evidence"]
+    else:
+        assert found == []
+
+
+def test_wp_data_access_changelog_fallback_when_stable_tag_missing(monkeypatch):
+    transport = Transport()
+    transport.routes[WPDA_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wpda_readme(None, changelog="5.5.89"),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DATA_ACCESS.run({}, _ctx(body=_WP_ROOT))
+    _assert_wpda_readme_get_only(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "wp-data-access:5.5.89"
+    assert "changelog version" in found[0]["evidence"]
+
+
+def test_wp_data_access_404_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[WPDA_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert WP_DATA_ACCESS.run({}, _ctx(body=_WP_ROOT)) == []
+    _assert_wpda_readme_get_only(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "<html><head></head><body>WP Data Access Stable tag: 5.5.89</body></html>",
+    "=== Some Other Plugin ===\nStable tag: 5.5.89\n",
+    "not a readme at all",
+])
+def test_wp_data_access_malformed_readme_is_none(monkeypatch, body):
+    transport = Transport()
+    transport.routes[WPDA_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert WP_DATA_ACCESS.run({}, _ctx(body=_WP_ROOT)) == []
+    _assert_wpda_readme_get_only(transport)
+
+
+def test_wp_data_access_unparseable_readme_is_present_unknown(monkeypatch):
+    transport = Transport()
+    transport.routes[WPDA_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": (
+            "=== WP Data Access ===\n"
+            "Contributors: wpdataaccess\n"
+            "Requires at least: 5.0\n\n"
+            "WP Data Access plugin.\n"
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = WP_DATA_ACCESS.run({}, _ctx(body=_WP_ROOT))
+    _assert_wpda_readme_get_only(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "wp-data-access:unknown"
+    assert "present, version unknown" in found[0]["title"].lower()
+    assert "low confidence" in found[0]["title"].lower()
+
+
+def test_wp_data_access_non_wordpress_is_skipped(monkeypatch):
+    transport = Transport()
+    transport.routes[WPDA_README] = {
+        "status": 200, "content_type": "text/plain", "body": _wpda_readme("5.5.89"),
+    }
+    _install(monkeypatch, transport)
+    assert WP_DATA_ACCESS.run({}, _ctx(body="<html><body>hello</body></html>")) == []
+    assert transport.calls == []
+
+
+def test_wp_data_access_only_issues_readme_get(monkeypatch):
+    transport = Transport()
+    transport.routes[WPDA_README] = {
+        "status": 200, "content_type": "text/plain", "body": _wpda_readme("5.5.89"),
+    }
+    transport.routes["/wp-json/wpda/app/update"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-login.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = WP_DATA_ACCESS.run({}, _ctx(body=_WP_ROOT))
+    _assert_wpda_readme_get_only(transport)
+    assert found and found[0]["severity"] == "high"
+    assert all(call[0] == "GET" for call in transport.calls)
+    blob = " ".join(call[1] for call in transport.calls)
+    assert "wpda/app" not in blob
+    assert "wp-login" not in blob
+
+
+def test_wp_data_access_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://wpda.attacker.example/wp-content/plugins/wp-data-access/readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_wp_data_access_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_wpda_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                WP_DATA_ACCESS.run({}, _ctx(body=_WP_ROOT))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_wp_data_access_check_source_is_get_only_readme_fingerprint():
+    text = (ROOT / "agents" / "cve_checks" / "wp_data_access.py").read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "looks_like_wordpress" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert WP_DATA_ACCESS.agent == "misconfig"
+    assert WP_DATA_ACCESS.cve == "CVE-2026-118267"
+    assert "5.5.90" in WP_DATA_ACCESS.fixed
+    assert "Never requests wpda/app" in text
+    assert "wpda/app/update" in text
+    assert "login" in text.lower()
+    assert "registration" in text.lower()
 
 
 # --- Apache mod_http2 (CVE-2026-119618) -------------------------------------
