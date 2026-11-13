@@ -29,6 +29,7 @@ from agents.cve_checks.latepoint import CHECK as LATEPOINT
 from agents.cve_checks.gpustack_auth import CHECK as GPUSTACK
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.slicewp import CHECK as SLICEWP
+from agents.cve_checks.apache_mod_http2 import CHECK as APACHE_MOD_HTTP2
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.vite_dev_server import CHECK as VITE_DEV
 from agents.cve_checks.vite_dev_server import CLIENT_PATH as VITE_CLIENT
@@ -3192,3 +3193,120 @@ def test_slicewp_check_source_is_get_only_static_fingerprint():
     assert SLICEWP.agent == "misconfig"
     assert SLICEWP.cve == "CVE-2026-120043"
     assert "1.2.15" in SLICEWP.fixed
+
+
+# --- Apache mod_http2 (CVE-2026-119618) -------------------------------------
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("2.4.54", False),
+    ("2.4.55", True),
+    ("2.4.62", True),
+    ("2.4.70", True),
+    ("2.4.71", False),
+    ("2.4.72", False),
+    ("2.2.34", False),
+])
+def test_apache_mod_http2_version_matrix(version, vulnerable):
+    from agents.cve_checks.apache_mod_http2 import affected
+
+    parts = tuple(int(part) for part in version.split("."))
+    assert affected(parts) is vulnerable
+
+
+def test_apache_2470_with_h2_is_high_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = APACHE_MOD_HTTP2.run({}, _ctx(headers={
+        "server": "Apache/2.4.70",
+        "alt-svc": 'h2=":443"; ma=3600',
+    }))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert UNCONFIRMED in found[0]["title"]
+    assert found[0]["check"]["match"] == "apache-mod-http2:2.4.70:h2"
+    assert "CVE-2026-119618" in found[0]["evidence"]
+    assert "backport" in found[0]["evidence"].lower()
+    assert "2.4.71" in found[0]["fix"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+def test_apache_2462_without_h2_is_medium(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = APACHE_MOD_HTTP2.run({}, _ctx(headers={"server": "Apache/2.4.62"}))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "medium"
+    assert found[0]["check"]["match"] == "apache-mod-http2:2.4.62:no-h2"
+    assert "mod_http2" in found[0]["evidence"]
+
+
+def test_apache_2471_and_2454_are_clean(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert APACHE_MOD_HTTP2.run({}, _ctx(headers={
+        "server": "Apache/2.4.71",
+        "upgrade": "h2c",
+    })) == []
+    assert APACHE_MOD_HTTP2.run({}, _ctx(headers={
+        "server": "Apache/2.4.54",
+        "alt-svc": 'h2=":443"',
+    })) == []
+    assert transport.calls == []
+
+
+def test_apache_without_version_and_nginx_yield_no_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert APACHE_MOD_HTTP2.run({}, _ctx(headers={"server": "Apache"})) == []
+    assert APACHE_MOD_HTTP2.run({}, _ctx(server="Apache")) == []
+    assert APACHE_MOD_HTTP2.run({}, _ctx(headers={"server": "nginx/1.24.0"})) == []
+    assert APACHE_MOD_HTTP2.run({}, _ctx(headers={
+        "server": "nginx/1.24.0",
+        "alt-svc": 'h2=":443"',
+    })) == []
+    assert transport.calls == []
+
+
+def test_apache_mod_http2_upgrade_h2c_counts_as_http2(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = APACHE_MOD_HTTP2.run({}, _ctx(headers={
+        "server": "Apache/2.4.70 (Unix)",
+        "upgrade": "h2c",
+    }))
+    assert transport.calls == []
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "apache-mod-http2:2.4.70:h2"
+
+
+def test_apache_mod_http2_negotiated_protocol_on_recon_root(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(headers={"server": "Apache/2.4.55"})
+    ctx.recon_root["alpn"] = "h2"
+    found = APACHE_MOD_HTTP2.run({}, ctx)
+    assert transport.calls == []
+    assert found and found[0]["severity"] == "high"
+
+
+def test_apache_mod_http2_check_source_is_passive_fingerprint_only():
+    text = (ROOT / "agents" / "cve_checks" / "apache_mod_http2.py").read_text(
+        encoding="utf-8",
+    )
+    assert "root_observation" in text
+    assert "fetch_path" not in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "import socket" not in text
+    assert "h2c" in text.lower()
+    assert "alt-svc" in text.lower() or "Alt-Svc" in text
+    assert "concurrent" in text.lower() or "parallel" in text.lower()
+    assert APACHE_MOD_HTTP2.agent == "misconfig"
+    assert APACHE_MOD_HTTP2.cve == "CVE-2026-119618"
+    assert "2.4.71" in APACHE_MOD_HTTP2.fixed
+    assert "No extra request" in APACHE_MOD_HTTP2.sends
+    assert "HTTP/2 frame" in APACHE_MOD_HTTP2.does_not_send
