@@ -23,6 +23,7 @@ from agents.cve_checks.nodered import CHECK as NODERED
 from agents.cve_checks.langflow import CHECK as LANGFLOW
 from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
+from agents.cve_checks.acf_extended_pro import CHECK as ACF_EXTENDED_PRO
 from agents.cve_checks.amelia_pro import CHECK as AMELIA_PRO
 from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
 from agents.cve_checks.latepoint import CHECK as LATEPOINT
@@ -76,6 +77,11 @@ BANNED = (
     "admin-ajax",
     "/my-account",
     "woocommerce-register",
+    "shortcode_preview",
+    "render_field",
+    "call_user_func",
+    "acf-extended-pro/includes",
+    "acfe_form",
 )
 
 
@@ -222,6 +228,9 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     # SliceWP only probes readme when the plugin path was already in crawled HTML.
     assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
+    # ACF Extended PRO only probes after WordPress is visible in crawled HTML.
+    assert paths.count("/wp-content/plugins/acf-extended-pro/readme.txt") == 0
+    assert paths.count("/wp-content/plugins/acf-extended/readme.txt") == 0
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
     assert paths.count("/") == 2
@@ -258,6 +267,10 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert all(
         path == "/wp-content/plugins/local-sync/readme.txt"
         or "local-sync" not in path
+        for path in paths
+    )
+    assert all(
+        "acf-extended" not in path
         for path in paths
     )
 
@@ -3192,3 +3205,237 @@ def test_slicewp_check_source_is_get_only_static_fingerprint():
     assert SLICEWP.agent == "misconfig"
     assert SLICEWP.cve == "CVE-2026-120043"
     assert "1.2.15" in SLICEWP.fixed
+
+
+# --- ACF Extended PRO (CVE-2026-120534) -------------------------------------
+
+ACFE_PRO_README = "/wp-content/plugins/acf-extended-pro/readme.txt"
+ACFE_FREE_README = "/wp-content/plugins/acf-extended/readme.txt"
+_WP_HTML = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="stylesheet" href="/wp-includes/css/dist/block-library/style.min.css" />'
+)
+
+
+def _acfe_pro_readme(tag=None, *, name="Advanced Custom Fields: Extended PRO"):
+    lines = [
+        f"=== {name} ===",
+        "Contributors: hwk-fr",
+        "Requires at least: 4.9",
+        "Tested up to: 7.1",
+        "Requires PHP: 5.6",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend(
+        [
+            "",
+            "All-in-one enhancement suite (PRO).",
+            "",
+            "== Changelog ==",
+            "",
+        ]
+    )
+    if tag is not None:
+        lines.extend([f"= {tag} =", "", "* Security release notes"])
+    return "\n".join(lines) + "\n"
+
+
+def _acfe_free_readme(tag="0.9.2.6"):
+    return (
+        "=== Advanced Custom Fields: Extended ===\n"
+        "Contributors: hwk-fr\n"
+        "Requires at least: 4.9\n"
+        "Tested up to: 7.1\n"
+        "Requires PHP: 5.6\n"
+        f"Stable tag: {tag}\n"
+        "\n"
+        "All-in-one enhancement suite that improves WordPress & Advanced Custom Fields.\n"
+        "\n"
+        "== 💎 Pro Highlight ==\n"
+        "\n"
+        "* 20+ New ACF Fields\n"
+        "\n"
+        "== Changelog ==\n"
+        "\n"
+        f"= {tag} =\n"
+        "\n"
+        "**ACF Extended Pro {tag}:**\n"
+        "\n"
+        "* Module: Forms – Fixed security issue with shortcode preview\n"
+    )
+
+
+def _assert_acfe_readme_gets_only(transport, *, max_gets=2):
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    assert len(paths) <= max_gets
+    allowed = {ACFE_PRO_README, ACFE_FREE_README}
+    assert set(paths) <= allowed
+    blob = " ".join(paths).lower()
+    for banned in (
+        "admin-ajax",
+        "wp-json",
+        "shortcode_preview",
+        "render_field",
+        "call_user_func",
+        "acfe_form",
+        "dynamic",
+    ):
+        assert banned not in blob
+    assert "post" not in {call[0].lower() for call in transport.calls}
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("0.9.2.6", True),
+    ("0.9.2.5", True),
+    ("0.9.1.0", True),
+    ("0.9.2.7", False),
+    ("0.9.2.8", False),
+    ("0.9.3.0", False),
+])
+def test_acf_extended_pro_version_matrix(version, vulnerable):
+    from agents.cve_checks.acf_extended_pro import affected
+    from agents.cve_checks.versions import parse_dotted
+
+    assert affected(parse_dotted(version)) is vulnerable
+
+
+def test_acf_extended_pro_0926_is_critical_and_passive(monkeypatch):
+    transport = Transport()
+    transport.routes[ACFE_PRO_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _acfe_pro_readme("0.9.2.6"),
+    }
+    _install(monkeypatch, transport)
+    found = ACF_EXTENDED_PRO.run({}, _ctx(body=_WP_HTML))
+    _assert_acfe_readme_gets_only(transport, max_gets=1)
+    assert transport.calls == [("GET", ACFE_PRO_README, None, False)]
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "acf-extended-pro:0.9.2.6"
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "shortcode_preview" in found[0]["evidence"]
+    assert "OpenSSL" in found[0]["evidence"]
+    assert "form submission" in found[0]["evidence"].lower()
+    assert "0.9.2.7" in found[0]["evidence"]
+    assert "0.9.2.8" in found[0]["fix"]
+
+
+@pytest.mark.parametrize("tag", ["0.9.2.7", "0.9.2.8"])
+def test_acf_extended_pro_fixed_versions_are_not_flagged(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[ACFE_PRO_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _acfe_pro_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = ACF_EXTENDED_PRO.run({}, _ctx(body=_WP_HTML))
+    _assert_acfe_readme_gets_only(transport, max_gets=1)
+    assert found == []
+
+
+def test_acf_extended_free_readme_only_is_not_flagged(monkeypatch):
+    transport = Transport()
+    transport.routes[ACFE_PRO_README] = {"status": 404, "body": ""}
+    transport.routes[ACFE_FREE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _acfe_free_readme("0.9.2.6"),
+    }
+    _install(monkeypatch, transport)
+    found = ACF_EXTENDED_PRO.run({}, _ctx(body=_WP_HTML))
+    _assert_acfe_readme_gets_only(transport, max_gets=2)
+    assert [call[1] for call in transport.calls] == [ACFE_PRO_README, ACFE_FREE_README]
+    assert found == []
+
+
+def test_acf_extended_pro_404_has_no_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[ACFE_PRO_README] = {"status": 404, "body": ""}
+    transport.routes[ACFE_FREE_README] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    found = ACF_EXTENDED_PRO.run({}, _ctx(body=_WP_HTML))
+    _assert_acfe_readme_gets_only(transport, max_gets=2)
+    assert found == []
+
+
+def test_acf_extended_pro_unknown_version_is_low_confidence(monkeypatch):
+    transport = Transport()
+    transport.routes[ACFE_PRO_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _acfe_pro_readme(None),
+    }
+    _install(monkeypatch, transport)
+    found = ACF_EXTENDED_PRO.run({}, _ctx(body=_WP_HTML))
+    _assert_acfe_readme_gets_only(transport, max_gets=1)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["confidence"] == "low"
+    assert found[0]["check"]["match"] == "acf-extended-pro:unknown"
+    assert "low confidence" in found[0]["title"].lower()
+
+
+def test_acf_extended_pro_without_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[ACFE_PRO_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _acfe_pro_readme("0.9.2.6"),
+    }
+    _install(monkeypatch, transport)
+    found = ACF_EXTENDED_PRO.run({}, _ctx(body="<html><body>hello</body></html>"))
+    assert transport.calls == []
+    assert found == []
+
+
+def test_acf_extended_pro_at_most_two_readme_gets(monkeypatch):
+    transport = Transport()
+    transport.routes[ACFE_PRO_README] = {"status": 404, "body": ""}
+    transport.routes[ACFE_FREE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _acfe_pro_readme(
+            "0.9.2.6", name="Advanced Custom Fields: Extended PRO"
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = ACF_EXTENDED_PRO.run({}, _ctx(body=_WP_HTML))
+    _assert_acfe_readme_gets_only(transport, max_gets=2)
+    assert len(transport.calls) == 2
+    assert found[0]["check"]["match"] == "acf-extended-pro:0.9.2.6"
+
+
+def test_acf_extended_pro_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://acfe.attacker.example/wp-content/plugins/acf-extended-pro/readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_acf_extended_pro_check_source_is_get_only_readme_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "acf_extended_pro.py"
+    ).read_text(encoding="utf-8")
+    assert 'PRIMARY = "/wp-content/plugins/acf-extended-pro/readme.txt"' in text
+    assert 'ALTERNATE = "/wp-content/plugins/acf-extended/readme.txt"' in text
+    assert "fetch_path(ctx, path" in text
+    assert text.count("fetch_path(") == 1
+    assert "_probe(ctx, PRIMARY" in text
+    assert "_probe(ctx, ALTERNATE" in text
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "admin-ajax" in text.lower()
+    assert "Never submits" in text or "never submits" in text.lower()
+    assert ACF_EXTENDED_PRO.agent == "misconfig"
+    assert ACF_EXTENDED_PRO.cve == "CVE-2026-120534"
+    assert "0.9.2.7" in ACF_EXTENDED_PRO.fixed
+    assert "0.9.2.8" in ACF_EXTENDED_PRO.fixed

@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 
 from . import (
+    acf_extended_pro,
     amelia_pro,
     contact_form_7,
     dependency_files,
@@ -53,6 +54,7 @@ CHECKS: tuple[CveCheck, ...] = (
     latepoint.CHECK,
     xen_orchestra.CHECK,
     slicewp.CHECK,
+    acf_extended_pro.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
