@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from . import (
     acf_extended_pro,
     amelia_pro,
+    apache_mod_http2,
     contact_form_7,
     dependency_files,
     gpustack_auth,
@@ -23,6 +24,7 @@ from . import (
     vite_dev_server,
     wedevs,
     wordpress,
+    wp_data_access,
     wp_duplicate,
     xen_orchestra,
     yootheme,
@@ -54,6 +56,8 @@ CHECKS: tuple[CveCheck, ...] = (
     latepoint.CHECK,
     xen_orchestra.CHECK,
     slicewp.CHECK,
+    wp_data_access.CHECK,
+    apache_mod_http2.CHECK,
     acf_extended_pro.CHECK,
 )
 
