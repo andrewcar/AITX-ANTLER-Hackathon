@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 
 from . import (
+    acf_extended_pro,
     amelia_pro,
     apache_mod_http2,
     contact_form_7,
@@ -57,6 +58,7 @@ CHECKS: tuple[CveCheck, ...] = (
     slicewp.CHECK,
     wp_data_access.CHECK,
     apache_mod_http2.CHECK,
+    acf_extended_pro.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
