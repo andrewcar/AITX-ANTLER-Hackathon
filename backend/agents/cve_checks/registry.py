@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from . import (
     amelia_pro,
+    apache_mod_http2,
     commerce_core,
     contact_form_7,
     dependency_files,
@@ -56,6 +57,7 @@ CHECKS: tuple[CveCheck, ...] = (
     xen_orchestra.CHECK,
     slicewp.CHECK,
     wp_data_access.CHECK,
+    apache_mod_http2.CHECK,
     commerce_core.CHECK,
 )
 
