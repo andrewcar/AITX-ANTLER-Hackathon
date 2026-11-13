@@ -23,6 +23,7 @@ from agents.cve_checks.nodered import CHECK as NODERED
 from agents.cve_checks.langflow import CHECK as LANGFLOW
 from agents.cve_checks.mlflow_gateway import CHECK as MLFLOW
 from agents.cve_checks.spec import UNCONFIRMED
+from agents.cve_checks.acf_extended_pro import CHECK as ACF_EXTENDED_PRO
 from agents.cve_checks.amelia_pro import CHECK as AMELIA_PRO
 from agents.cve_checks.contact_form_7 import CHECK as CONTACT_FORM_7
 from agents.cve_checks.latepoint import CHECK as LATEPOINT
@@ -31,7 +32,6 @@ from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.slicewp import CHECK as SLICEWP
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.apache_mod_http2 import CHECK as APACHE_MOD_HTTP2
-from agents.cve_checks.acf_extended_pro import CHECK as ACF_EXTENDED_PRO
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.vite_dev_server import CHECK as VITE_DEV
 from agents.cve_checks.vite_dev_server import CLIENT_PATH as VITE_CLIENT
@@ -3452,6 +3452,7 @@ def test_wp_data_access_check_source_is_get_only_readme_fingerprint():
     assert "login" in text.lower()
     assert "registration" in text.lower()
 
+
 # --- Apache mod_http2 (CVE-2026-119618) -------------------------------------
 
 @pytest.mark.parametrize("version,vulnerable", [
@@ -3567,6 +3568,7 @@ def test_apache_mod_http2_check_source_is_passive_fingerprint_only():
     assert "2.4.71" in APACHE_MOD_HTTP2.fixed
     assert "No extra request" in APACHE_MOD_HTTP2.sends
     assert "HTTP/2 frame" in APACHE_MOD_HTTP2.does_not_send
+
 
 # --- ACF Extended PRO (CVE-2026-120534) -------------------------------------
 
