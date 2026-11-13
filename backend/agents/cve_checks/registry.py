@@ -5,6 +5,7 @@ from . import (
     acf_extended_pro,
     amelia_pro,
     apache_mod_http2,
+    commerce_core,
     contact_form_7,
     dependency_files,
     gpustack_auth,
@@ -59,6 +60,7 @@ CHECKS: tuple[CveCheck, ...] = (
     wp_data_access.CHECK,
     apache_mod_http2.CHECK,
     acf_extended_pro.CHECK,
+    commerce_core.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
