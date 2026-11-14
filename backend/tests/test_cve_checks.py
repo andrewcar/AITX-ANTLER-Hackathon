@@ -32,6 +32,7 @@ from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.slicewp import CHECK as SLICEWP
 from agents.cve_checks.gravity_forms import CHECK as GRAVITY_FORMS
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
+from agents.cve_checks.craft_cms import CHECK as CRAFT_CMS
 from agents.cve_checks.apache_mod_http2 import CHECK as APACHE_MOD_HTTP2
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.vite_dev_server import CHECK as VITE_DEV
@@ -90,6 +91,9 @@ BANNED = (
     "call_user_func",
     "acf-extended-pro/includes",
     "acfe_form",
+    "[attribute]",
+    "%5Battribute%5D",
+    "craft.search",
 )
 
 
@@ -245,6 +249,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/modules/contrib/commerce/commerce.info.yml") == 0
     # Gravity Forms only probes change_log.txt when WordPress + plugin path are present.
     assert paths.count("/wp-content/plugins/gravityforms/change_log.txt") == 0
+    # Craft CMS only probes /admin/login after a Craft fingerprint on the root response.
+    assert paths.count("/admin/login") == 0
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
     assert paths.count("/") == 2
@@ -272,6 +278,9 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "my-account" not in blob.lower()
     assert "commerce.info.yml" not in blob.lower()
     assert "jsonapi" not in blob.lower()
+    assert "attribute" not in blob.lower()
+    assert "craft.search" not in blob.lower()
+    assert "/admin/login" not in paths
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -4334,3 +4343,298 @@ def test_gravity_forms_check_source_is_get_only_static_fingerprint():
     assert GRAVITY_FORMS.agent == "misconfig"
     assert GRAVITY_FORMS.cve == "CVE-2026-103039"
     assert "3.1.3" in GRAVITY_FORMS.fixed
+
+# --- Craft CMS (CVE-2026-123488) --------------------------------------------
+
+CRAFT_LOGIN = "/admin/login"
+_CRAFT_BANNED = (
+    "attribute",
+    "[attribute]",
+    "%5Battribute%5D",
+    "craft.search",
+    "SLEEP(",
+    "BENCHMARK(",
+    "-- ",
+    "UNION SELECT",
+    "DROP TABLE",
+)
+
+
+def _craft_login_html(version=None):
+    ver = f"Craft CMS {version}" if version else "Craft CMS"
+    return (
+        "<!DOCTYPE html><html><head><title>Sign In</title></head>"
+        f'<body><a id="poweredby" href="https://craftcms.com/" '
+        f'title="Powered by Craft CMS">{ver}</a>'
+        '<form method="post"><input name="loginName">'
+        '<input name="password" type="password"></form>'
+        "</body></html>"
+    )
+
+
+def _craft_root(*, powered=True, cookie=None, resources=False, body_extra=""):
+    headers = {}
+    if powered:
+        headers["x-powered-by"] = "Craft CMS"
+    if cookie:
+        headers["set-cookie"] = cookie
+    body = "<html><body><p>Welcome</p>"
+    if resources:
+        body += '<link href="/cpresources/abc123/css/cp.css" rel="stylesheet">'
+    body += body_extra + "</body></html>"
+    return headers, body
+
+
+def _assert_craft_passive(transport):
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    for _method, path, _session, _follow in transport.calls:
+        low = path.lower()
+        for banned in _CRAFT_BANNED:
+            assert banned.lower() not in low
+
+
+def test_craft_cms_no_fingerprint_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[CRAFT_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _craft_login_html("4.18.8"),
+    }
+    _install(monkeypatch, transport)
+    assert CRAFT_CMS.run({}, _ctx(body="<html><body>hello</body></html>")) == []
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("version,flagged", [
+    ("4.18.8", True),
+    ("4.18.9", False),
+    ("4.0.0", True),
+    ("5.11.1", True),
+    ("5.11.2", False),
+    ("5.0.0", True),
+    ("3.9.15", False),
+    ("3.5.0", False),
+    ("6.0.0", False),
+])
+def test_craft_cms_login_version_matrix(monkeypatch, version, flagged):
+    transport = Transport()
+    transport.routes[CRAFT_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _craft_login_html(version),
+    }
+    _install(monkeypatch, transport)
+    headers, body = _craft_root()
+    found = CRAFT_CMS.run({}, _ctx(headers=headers, body=body))
+    _assert_craft_passive(transport)
+    assert [call[1] for call in transport.calls] == [CRAFT_LOGIN]
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-123488" in found[0]["title"]
+        assert "CVE-2026-123488" in found[0]["evidence"]
+        assert "GHSA-qcvp-ggx3-97r6" in found[0]["evidence"]
+        assert "4.18.9" in found[0]["fix"]
+        assert "5.11.2" in found[0]["fix"]
+        assert found[0]["check"]["match"] == f"craft-cms:{version}"
+        assert "exploit" not in found[0]["title"].lower()
+        assert "exploits" not in found[0]["evidence"].lower().replace(
+            "exploited", ""
+        )
+    else:
+        assert found == []
+
+
+def test_craft_cms_fingerprint_without_version_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[CRAFT_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _craft_login_html(None),
+    }
+    _install(monkeypatch, transport)
+    headers, body = _craft_root()
+    found = CRAFT_CMS.run({}, _ctx(headers=headers, body=body))
+    _assert_craft_passive(transport)
+    assert [call[1] for call in transport.calls] == [CRAFT_LOGIN]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "craft-cms:unknown"
+    assert "version not visible" in found[0]["title"]
+    assert "4.18.9" in found[0]["title"]
+    assert "5.11.2" in found[0]["title"]
+    assert "CVE-2026-123488" in found[0]["title"]
+    assert "exploited" in found[0]["title"].lower()
+    assert "exploits" not in found[0]["evidence"].lower().replace("exploited", "")
+
+
+@pytest.mark.parametrize("headers,body", [
+    ({"x-powered-by": "Craft CMS"}, "<html><body>hi</body></html>"),
+    (
+        {"set-cookie": "CraftSessionId=abc; Path=/; HttpOnly"},
+        "<html><body>hi</body></html>",
+    ),
+    (
+        {"set-cookie": "CRAFT_CSRF_TOKEN=xyz; Path=/"},
+        "<html><body>hi</body></html>",
+    ),
+    ({}, '<html><body><script src="/cpresources/hash/cp.js"></script></body></html>'),
+])
+def test_craft_cms_fingerprint_signals(monkeypatch, headers, body):
+    transport = Transport()
+    transport.routes[CRAFT_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _craft_login_html("5.11.1"),
+    }
+    _install(monkeypatch, transport)
+    found = CRAFT_CMS.run({}, _ctx(headers=headers, body=body))
+    assert transport.calls
+    assert found and found[0]["severity"] == "critical"
+
+
+def test_craft_cms_root_version_skips_login_get(monkeypatch):
+    transport = Transport()
+    transport.routes[CRAFT_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _craft_login_html("4.18.8"),
+    }
+    _install(monkeypatch, transport)
+    found = CRAFT_CMS.run({}, _ctx(
+        headers={"x-powered-by": "Craft CMS"},
+        body='<meta name="generator" content="Craft CMS 4.18.8">',
+    ))
+    assert transport.calls == []
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "craft-cms:4.18.8"
+    assert "root response" in found[0]["evidence"]
+
+
+def test_craft_cms_set_cookie_list_from_recon_root(monkeypatch):
+    transport = Transport()
+    transport.routes[CRAFT_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _craft_login_html(None),
+    }
+    _install(monkeypatch, transport)
+    ctx = _ctx(body="<html><body>home</body></html>")
+    ctx.recon_root["set_cookie"] = ["CraftSessionId=sess; Path=/"]
+    found = CRAFT_CMS.run({}, ctx)
+    assert [call[1] for call in transport.calls] == [CRAFT_LOGIN]
+    assert found and found[0]["severity"] == "info"
+
+
+def test_craft_cms_at_most_one_get_and_never_mutates(monkeypatch):
+    transport = Transport()
+    transport.routes[CRAFT_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _craft_login_html("5.11.1"),
+    }
+    transport.routes["/index.php"] = {"status": 200, "body": "nope"}
+    transport.routes["/actions/users/login"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    headers, body = _craft_root(resources=True)
+    found = CRAFT_CMS.run({}, _ctx(headers=headers, body=body))
+    _assert_craft_passive(transport)
+    assert [call[1] for call in transport.calls] == [CRAFT_LOGIN]
+    assert found and found[0]["severity"] == "critical"
+
+
+def test_craft_cms_no_request_url_contains_attribute(monkeypatch):
+    transport = Transport()
+    transport.routes[CRAFT_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _craft_login_html("4.18.8"),
+    }
+    _install(monkeypatch, transport)
+    CRAFT_CMS.run({}, _ctx(headers={"x-powered-by": "Craft CMS"}))
+    for _method, path, _session, _follow in transport.calls:
+        assert "attribute" not in path.lower()
+        assert "%5battribute%5d" not in path.lower()
+        assert "[attribute]" not in path.lower()
+
+
+def test_craft_cms_kill_switch_stops_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_craft_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                CRAFT_CMS.run({}, _ctx(headers={"x-powered-by": "Craft CMS"}))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_craft_cms_get_is_audited(monkeypatch):
+    seen = {}
+
+    def opener(req, timeout=None):
+        seen["method"] = req.get_method()
+        seen["url"] = req.full_url
+        seen["calls"] = seen.get("calls", 0) + 1
+        return _Resp(
+            body=_craft_login_html("5.11.1").encode(),
+            headers=[("content-type", "text/html")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_craft_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("recon"):
+            found = CRAFT_CMS.run({}, _ctx(headers={"x-powered-by": "Craft CMS"}))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["method"] == "GET"
+    assert CRAFT_LOGIN in seen["url"]
+    assert "attribute" not in seen["url"].lower()
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "recon"
+    assert "body" not in rows[-1]
+
+
+def test_craft_cms_version_matrix_helper():
+    from agents.cve_checks.craft_cms import affected
+
+    assert affected((4, 18, 8)) is True
+    assert affected((4, 18, 9)) is False
+    assert affected((5, 11, 1)) is True
+    assert affected((5, 11, 2)) is False
+    assert affected((3, 9, 15)) is False
+    assert affected((6, 0, 0)) is False
+
+
+def test_craft_cms_check_source_is_get_only_static_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "craft_cms.py"
+    ).read_text(encoding="utf-8")
+    assert "fetch_path(ctx, LOGIN" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "craft.search" in text.lower()
+    assert "[attribute]" in text
+    assert CRAFT_CMS.agent == "recon"
+    assert CRAFT_CMS.cve == "CVE-2026-123488"
+    assert "4.18.9" in CRAFT_CMS.fixed
+    assert "5.11.2" in CRAFT_CMS.fixed
+    assert CRAFT_CMS.id == "craft-cms"

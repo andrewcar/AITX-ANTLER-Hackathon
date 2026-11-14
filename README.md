@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (396 test functions).
+- **Tests:** `pytest` (482 test functions).
 
 ## Architecture
 
@@ -98,6 +98,7 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | `acf-extended-pro` (misconfig) | CVE-2026-120534 | Confirm WordPress from already-crawled HTML, then at most two GETs of plugin `readme.txt`: vendor PRO folder `/wp-content/plugins/acf-extended-pro/readme.txt`, and when that path is uncertain the documented free-folder alternative `/wp-content/plugins/acf-extended/readme.txt`. Critical, version unconfirmed, for ACF Extended PRO through 0.9.2.6 (first fix 0.9.2.7; 0.9.2.8 recommended). Patchstack known-exploited (recently-exploited list 3 November 2026; not CISA KEV); Wordfence CVSS 9.8. Evidence lists prerequisites (`shortcode_preview` or no OpenSSL) without confirming them. Info/low confidence when PRO is present but the version is hidden. Free `acf-extended` alone is never flagged. No request when WordPress is not indicated. | Never submits ACF/ACFE forms. Never requests `admin-ajax.php` or REST API routes. Never sends render/callback parameters, `shortcode_preview` probes, Dynamic Render payloads, POSTs, uploads, writes, logins, or malformed input. |
 | `commerce-core` (misconfig) | CVE-2026-118539 (SA-CONTRIB-2026-254) | Confirm Drupal from `X-Generator`, meta generator, or `drupalSettings`. Detect Commerce from page markup (`commerce-*` CSS classes, cart blocks, `/cart` links). Reuse a `drupal/commerce` version already parsed from an exposed `composer.lock` (dependency_files) when present; otherwise one GET `/modules/contrib/commerce/commerce.info.yml` for the `version:` line. Critical, version unconfirmed, for `<8.x-2.41` and `>=3.0.0 <3.3.13` (fixed 3.3.13 / 8.x-2.41). Info (low confidence) when Commerce is present but the version is hidden — update to 3.3.13 / 8.x-2.41 and audit orders. Non-Drupal targets are skipped. Drupal confirms active exploitation (not CISA KEV). | Never adds to cart, starts checkout, or sends JSON:API PATCH/POST. No order or price changes, no form submissions, no registrations, no uploads, no writes, no malformed input, and no auth-bypass attempts. |
 | `gravityforms` (misconfig) | CVE-2026-103039 | Confirm WordPress from the already-fetched root response, then plugin asset `?ver=` already in the page HTML. When the plugin path is present without a version, one GET `/wp-content/plugins/gravityforms/change_log.txt` (premium plugin; usually no public readme). Critical, version unconfirmed, for Gravity Forms through 3.1.2 (fixed in 3.1.3, released 1 October 2026; current line includes 3.2.1). Patchstack CVSS 9.8 and known-exploited (Patchstack telemetry, not CISA KEV); Wordfence CVSS 9.8. Info when the plugin is present but the version is hidden. Non-WordPress targets and pages without a `gravityforms` asset yield no request. Notes that code execution requires a gadget chain outside the plugin, which this check does not confirm. | Never requests `admin-ajax.php`, REST form submission, or any form endpoint. No POSTs or form submissions, no serialized PHP strings, no `O:`-style payloads, no file uploads, no writes, and nothing to `/wp-admin`. Never more than the single `change_log.txt` GET. |
+| `craft-cms` (recon) | CVE-2026-123488 (GHSA-qcvp-ggx3-97r6) | Fingerprint Craft from the already-fetched homepage (`X-Powered-By: Craft CMS`, `CraftSessionId` / `CRAFT_CSRF_TOKEN` cookies, or `/cpresources/` paths). When fingerprinted, at most one GET `/admin/login` for a public version string (e.g. `Craft CMS 5.6.16`). Critical, version unconfirmed, for `4.0.0–<4.18.9` and `5.0.0–<5.11.2` (fixed 4.18.9 / 5.11.2; MySQL/MariaDB). Info when Craft is detected but the version is not visible — confirm ≥ 4.18.9 / 5.11.2. Exploited in the wild (Canadian Cyber Centre AV26-1086; VulnCheck KEV). No request when Craft is absent. | Never requests `craft.search` or any URL containing `attribute`, `[attribute]`, or `%5Battribute%5D`. No SQL characters or payloads, no POST/PUT, no login attempts, no admin actions, no uploads, no writes, no malformed input. |
 
 The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
@@ -129,7 +130,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (459 test functions in `backend/tests/`):
+Tests (482 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q
