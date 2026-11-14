@@ -10,6 +10,7 @@ from . import (
     craft_cms,
     dependency_files,
     gpustack_auth,
+    gravity_forms,
     langflow,
     latepoint,
     magento,
@@ -62,6 +63,7 @@ CHECKS: tuple[CveCheck, ...] = (
     apache_mod_http2.CHECK,
     acf_extended_pro.CHECK,
     commerce_core.CHECK,
+    gravity_forms.CHECK,
     craft_cms.CHECK,
 )
 
