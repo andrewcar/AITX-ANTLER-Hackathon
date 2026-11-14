@@ -7,6 +7,7 @@ from . import (
     apache_mod_http2,
     commerce_core,
     contact_form_7,
+    craft_cms,
     dependency_files,
     gpustack_auth,
     langflow,
@@ -61,6 +62,7 @@ CHECKS: tuple[CveCheck, ...] = (
     apache_mod_http2.CHECK,
     acf_extended_pro.CHECK,
     commerce_core.CHECK,
+    craft_cms.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
