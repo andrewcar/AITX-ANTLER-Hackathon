@@ -30,6 +30,7 @@ from agents.cve_checks.latepoint import CHECK as LATEPOINT
 from agents.cve_checks.gpustack_auth import CHECK as GPUSTACK
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.slicewp import CHECK as SLICEWP
+from agents.cve_checks.gravity_forms import CHECK as GRAVITY_FORMS
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.apache_mod_http2 import CHECK as APACHE_MOD_HTTP2
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
@@ -242,6 +243,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/acf-extended/readme.txt") == 0
     # Commerce Core only probes info.yml when Drupal + Commerce markup are present.
     assert paths.count("/modules/contrib/commerce/commerce.info.yml") == 0
+    # Gravity Forms only probes change_log.txt when WordPress + plugin path are present.
+    assert paths.count("/wp-content/plugins/gravityforms/change_log.txt") == 0
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
     assert paths.count("/") == 2
@@ -4055,3 +4058,279 @@ def test_commerce_core_check_source_is_get_only_static_fingerprint():
     assert COMMERCE_CORE.cve == "CVE-2026-118539"
     assert "3.3.13" in COMMERCE_CORE.fixed
     assert "8.x-2.41" in COMMERCE_CORE.fixed
+
+
+# --- Gravity Forms (CVE-2026-103039) ----------------------------------------
+
+GF_CHANGELOG = "/wp-content/plugins/gravityforms/change_log.txt"
+_GF_WP_ROOT = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="https://api.w.org/" href="http://127.0.0.1:8081/wp-json/" />'
+)
+_GF_BANNED = (
+    "admin-ajax.php",
+    "admin-ajax",
+    "/wp-admin",
+    "wp-json/gf",
+    "gf_submit",
+    "gform_submit",
+    "maybe_unserialize",
+    "O:8:",
+    "O:7:",
+)
+
+
+def _gf_asset_html(version: str | None = None) -> str:
+    if version is None:
+        return (
+            f"{_GF_WP_ROOT}"
+            '<script src="/wp-content/plugins/gravityforms/js/gravityforms.min.js">'
+            "</script>"
+            '<link rel="stylesheet" href="/wp-content/plugins/gravityforms/'
+            'css/formreset.min.css" />'
+        )
+    return (
+        f"{_GF_WP_ROOT}"
+        f'<script src="/wp-content/plugins/gravityforms/js/gravityforms.min.js'
+        f'?ver={version}"></script>'
+        f'<link rel="stylesheet" href="/wp-content/plugins/gravityforms/'
+        f'css/formreset.min.css?ver={version}" />'
+    )
+
+
+def _gf_changelog(version: str) -> str:
+    return (
+        f"### {version} | 2026-10-01\n"
+        "- Added security enhancements.\n"
+        "- Fixed an issue in Gravity Forms form display.\n"
+        "- Updated gform_enqueue_scripts handling.\n"
+    )
+
+
+def _assert_gf_passive(transport):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths)
+    for banned in _GF_BANNED:
+        assert banned.lower() not in blob.lower()
+    for path in paths:
+        assert path == GF_CHANGELOG
+    assert paths.count(GF_CHANGELOG) <= 1
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("3.1.2", True), ("3.1.1", True), ("3.0.0", True), ("2.9.21", True),
+    ("3.1.3", False), ("3.2.0", False), ("3.2.1", False), ("4.0.0", False),
+])
+def test_gravity_forms_version_matrix(version, vulnerable):
+    from agents.cve_checks.gravity_forms import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_gravity_forms_no_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.1.2"),
+    }
+    _install(monkeypatch, transport)
+    assert GRAVITY_FORMS.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_gravity_forms_wordpress_without_plugin_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.1.2"),
+    }
+    _install(monkeypatch, transport)
+    assert GRAVITY_FORMS.run({}, _ctx(body=_GF_WP_ROOT)) == []
+    assert transport.calls == []
+
+
+def test_gravity_forms_asset_ver_312_is_critical_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html("3.1.2")))
+    assert transport.calls == []
+    assert GRAVITY_FORMS.agent == "misconfig"
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "gravityforms:3.1.2"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-103039" in found[0]["title"]
+    assert "CVE-2026-103039" in found[0]["evidence"]
+    assert "3.1.3" in found[0]["fix"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "Wordfence" in found[0]["evidence"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "does not confirm" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+def test_gravity_forms_313_and_321_are_not_flagged(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html("3.1.3"))) == []
+    assert GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html("3.2.1"))) == []
+    assert transport.calls == []
+
+
+def test_gravity_forms_plugin_present_no_version_one_get_then_info(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 404,
+        "content_type": "text/plain",
+        "body": "missing",
+    }
+    _install(monkeypatch, transport)
+    found = GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html(None)))
+    _assert_gf_passive(transport)
+    assert [call[1] for call in transport.calls] == [GF_CHANGELOG]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "gravityforms:unknown"
+    assert "CVE-2026-103039" in found[0]["title"]
+
+
+def test_gravity_forms_changelog_fallback_312_is_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.1.2"),
+    }
+    _install(monkeypatch, transport)
+    found = GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html(None)))
+    _assert_gf_passive(transport)
+    assert [call[1] for call in transport.calls] == [GF_CHANGELOG]
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "gravityforms:3.1.2"
+    assert "CVE-2026-103039" in found[0]["evidence"]
+    assert "3.1.3" in found[0]["fix"]
+
+
+def test_gravity_forms_changelog_fallback_313_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.1.3"),
+    }
+    _install(monkeypatch, transport)
+    assert GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html(None))) == []
+    _assert_gf_passive(transport)
+
+
+def test_gravity_forms_at_most_one_changelog_get_and_never_form_endpoints(
+    monkeypatch,
+):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.1.2"),
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-json/gf/v2/forms"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html(None)))
+    _assert_gf_passive(transport)
+    assert [call[1] for call in transport.calls] == [GF_CHANGELOG]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "admin-ajax" not in blob
+    assert "wp-json" not in blob
+    assert "wp-admin" not in blob
+
+
+def test_gravity_forms_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_gf_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_gravity_forms_requests_are_get_audited_and_have_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_gf_changelog("3.1.2").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_gf_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = GRAVITY_FORMS.run({}, _ctx(body=_gf_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert GF_CHANGELOG in rows[-1]["url"]
+    assert "body" not in rows[-1]
+
+
+def test_gravity_forms_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://gf.attacker.example/wp-content/plugins/gravityforms/"
+            "change_log.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_gravity_forms_check_source_is_get_only_static_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "gravity_forms.py"
+    ).read_text(encoding="utf-8")
+    assert "fetch_path(ctx, CHANGELOG" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "looks_like_wordpress" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "admin-ajax" in text.lower()
+    assert "Never requests" in text or "never requests" in text.lower()
+    assert "O:" in text or "serialized" in text.lower()
+    assert GRAVITY_FORMS.agent == "misconfig"
+    assert GRAVITY_FORMS.cve == "CVE-2026-103039"
+    assert "3.1.3" in GRAVITY_FORMS.fixed
