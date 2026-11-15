@@ -31,6 +31,7 @@ from agents.cve_checks.gpustack_auth import CHECK as GPUSTACK
 from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.slicewp import CHECK as SLICEWP
 from agents.cve_checks.gravity_forms import CHECK as GRAVITY_FORMS
+from agents.cve_checks.gravity_forms_chunked import CHECK as GRAVITY_FORMS_CHUNKED
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.craft_cms import CHECK as CRAFT_CMS
 from agents.cve_checks.apache_mod_http2 import CHECK as APACHE_MOD_HTTP2
@@ -94,6 +95,8 @@ BANNED = (
     "[attribute]",
     "%5Battribute%5D",
     "craft.search",
+    "gf_upload",
+    "GFAsyncUpload",
 )
 
 
@@ -4086,6 +4089,8 @@ _GF_BANNED = (
     "maybe_unserialize",
     "O:8:",
     "O:7:",
+    "gf_upload",
+    "GFAsyncUpload",
 )
 
 
@@ -4343,6 +4348,194 @@ def test_gravity_forms_check_source_is_get_only_static_fingerprint():
     assert GRAVITY_FORMS.agent == "misconfig"
     assert GRAVITY_FORMS.cve == "CVE-2026-103039"
     assert "3.1.3" in GRAVITY_FORMS.fixed
+
+
+# --- Gravity Forms chunked upload (CVE-2026-119529) ------------------------
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("3.1.2", True), ("3.1.3", True), ("3.2.0", True), ("3.2.1", True),
+    ("3.2.2", False), ("3.3.0", False), ("4.0.0", False),
+])
+def test_gravity_forms_chunked_version_matrix(version, vulnerable):
+    from agents.cve_checks.gravity_forms_chunked import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_gravity_forms_312_reports_both_cves(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_gf_asset_html("3.1.2"))
+    first = GRAVITY_FORMS.run({}, ctx)
+    second = GRAVITY_FORMS_CHUNKED.run({}, ctx)
+    assert transport.calls == []
+    assert len(first) == 1 and first[0]["severity"] == "critical"
+    assert "CVE-2026-103039" in first[0]["title"]
+    assert len(second) == 1 and second[0]["severity"] == "medium"
+    assert "CVE-2026-119529" in second[0]["title"]
+    assert "3.2.2" in second[0]["fix"]
+    assert "exploit" not in second[0]["title"].lower()
+    assert "we exploit" not in second[0]["evidence"].lower()
+
+
+def test_gravity_forms_321_reports_119529_only(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_gf_asset_html("3.2.1"))
+    assert GRAVITY_FORMS.run({}, ctx) == []
+    found = GRAVITY_FORMS_CHUNKED.run({}, ctx)
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "medium"
+    assert "CVE-2026-119529" in found[0]["title"]
+    assert found[0]["check"]["match"] == "gravityforms-chunked:3.2.1"
+    assert "3.2.2" in found[0]["fix"]
+    assert "SSI" in found[0]["evidence"] or "ssi" in found[0]["evidence"].lower()
+    assert "VulnCheck" in found[0]["evidence"] or "vulncheck" in found[0]["evidence"].lower()
+
+
+def test_gravity_forms_322_reports_none(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_gf_asset_html("3.2.2"))
+    assert GRAVITY_FORMS.run({}, ctx) == []
+    assert GRAVITY_FORMS_CHUNKED.run({}, ctx) == []
+    assert transport.calls == []
+
+
+def test_gravity_forms_both_cves_share_one_changelog_get(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.1.2"),
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/?gf_page=upload"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_gf_asset_html(None))
+    first = GRAVITY_FORMS.run({}, ctx)
+    second = GRAVITY_FORMS_CHUNKED.run({}, ctx)
+    _assert_gf_passive(transport)
+    assert [call[1] for call in transport.calls] == [GF_CHANGELOG]
+    assert [call[1] for call in transport.calls].count(GF_CHANGELOG) == 1
+    assert first and first[0]["severity"] == "critical"
+    assert "CVE-2026-103039" in first[0]["evidence"]
+    assert second and second[0]["severity"] == "medium"
+    assert "CVE-2026-119529" in second[0]["evidence"]
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "gf_upload" not in blob
+    assert "gfasyncupload" not in blob
+    assert "admin-ajax" not in blob
+
+
+def test_gravity_forms_chunked_no_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.2.1"),
+    }
+    _install(monkeypatch, transport)
+    assert GRAVITY_FORMS_CHUNKED.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_gravity_forms_chunked_wordpress_without_plugin_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.2.1"),
+    }
+    _install(monkeypatch, transport)
+    assert GRAVITY_FORMS_CHUNKED.run({}, _ctx(body=_GF_WP_ROOT)) == []
+    assert transport.calls == []
+
+
+def test_gravity_forms_chunked_plugin_present_no_version_one_get_then_info(
+    monkeypatch,
+):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 404,
+        "content_type": "text/plain",
+        "body": "missing",
+    }
+    _install(monkeypatch, transport)
+    found = GRAVITY_FORMS_CHUNKED.run({}, _ctx(body=_gf_asset_html(None)))
+    _assert_gf_passive(transport)
+    assert [call[1] for call in transport.calls] == [GF_CHANGELOG]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "gravityforms-chunked:unknown"
+    assert "CVE-2026-119529" in found[0]["title"]
+
+
+def test_gravity_forms_chunked_changelog_fallback_321_is_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.2.1"),
+    }
+    _install(monkeypatch, transport)
+    found = GRAVITY_FORMS_CHUNKED.run({}, _ctx(body=_gf_asset_html(None)))
+    _assert_gf_passive(transport)
+    assert found[0]["severity"] == "medium"
+    assert found[0]["check"]["match"] == "gravityforms-chunked:3.2.1"
+    assert "CVE-2026-119529" in found[0]["evidence"]
+    assert "3.2.2" in found[0]["fix"]
+
+
+def test_gravity_forms_chunked_changelog_fallback_322_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[GF_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _gf_changelog("3.2.2"),
+    }
+    _install(monkeypatch, transport)
+    assert GRAVITY_FORMS_CHUNKED.run({}, _ctx(body=_gf_asset_html(None))) == []
+    _assert_gf_passive(transport)
+
+
+def test_gravity_forms_chunked_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_gf_chunk_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                GRAVITY_FORMS_CHUNKED.run({}, _ctx(body=_gf_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_gravity_forms_chunked_check_source_reuses_helpers_no_upload():
+    text = (
+        ROOT / "agents" / "cve_checks" / "gravity_forms_chunked.py"
+    ).read_text(encoding="utf-8")
+    assert "fetch_path" not in text
+    assert "resolve_plugin_version" in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "gf_upload" in text
+    assert "GFAsyncUpload" in text
+    assert GRAVITY_FORMS_CHUNKED.agent == "misconfig"
+    assert GRAVITY_FORMS_CHUNKED.cve == "CVE-2026-119529"
+    assert "3.2.2" in GRAVITY_FORMS_CHUNKED.fixed
 
 # --- Craft CMS (CVE-2026-123488) --------------------------------------------
 

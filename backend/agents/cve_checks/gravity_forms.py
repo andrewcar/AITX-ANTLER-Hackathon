@@ -13,11 +13,13 @@ Detection is passive only: confirm WordPress from the already-fetched root
 response, parse crawled HTML for ``/wp-content/plugins/gravityforms/`` asset
 URLs with ``?ver=``, and when the plugin path is present without a version,
 at most one GET of the packaged ``change_log.txt`` (premium plugin; usually
-no public readme).
+no public readme). That single changelog GET is shared with the sibling
+chunked-upload check (CVE-2026-119529) via a per-scan cache on the context.
 
 Never requests admin-ajax, REST form submission, or any form endpoint. No
 POSTs, form submissions, serialized PHP strings, ``O:``-style payloads, file
-uploads, writes, or anything to /wp-admin.
+uploads (including ``gf_upload`` / ``GFAsyncUpload``), writes, or anything
+to /wp-admin.
 """
 import re
 
@@ -31,6 +33,7 @@ from .versions import cmp_ver, fmt, parse_dotted
 CHANGELOG = "/wp-content/plugins/gravityforms/change_log.txt"
 _AFFECTED_THROUGH = (3, 1, 2)
 _FIXED = (3, 1, 3)
+_CHANGELOG_CACHE = "_gravityforms_changelog"
 
 _ASSET = re.compile(
     r"/wp-content/plugins/gravityforms/[^\"'\s>]*",
@@ -138,7 +141,7 @@ def _passive_note() -> str:
         "Only a read-only GET of the public plugin change_log.txt was sent when "
         "needed; no admin-ajax.php, REST form submission, form endpoint, POST, "
         "form submission, serialized PHP string, O:-style payload, file upload, "
-        "write, or /wp-admin request was sent."
+        "gf_upload, GFAsyncUpload, write, or /wp-admin request was sent."
     )
 
 
@@ -182,23 +185,41 @@ def _info(where: str) -> dict:
 
 
 def _changelog_version(ctx) -> tuple[tuple[int, ...] | None, str, bool]:
-    """At most one GET of change_log.txt. Returns ``(version, where, is_plugin)``."""
+    """At most one GET of change_log.txt per scan. Shared with sibling checks."""
+    cached = getattr(ctx, _CHANGELOG_CACHE, None)
+    if cached is not None:
+        return cached
     resp = fetch_path(ctx, CHANGELOG, max_bytes=65536)
     if resp.get("status") != 200:
-        return None, "", False
+        result = (None, "", False)
+        setattr(ctx, _CHANGELOG_CACHE, result)
+        return result
     body = resp.get("body") or ""
     if not is_plugin_changelog(body):
-        return None, "", False
+        result = (None, "", False)
+        setattr(ctx, _CHANGELOG_CACHE, result)
+        return result
     version = changelog_version(body)
     if version is not None:
-        return version, f"GET {CHANGELOG} version heading", True
-    return None, f"GET {CHANGELOG}", True
+        result = (version, f"GET {CHANGELOG} version heading", True)
+    else:
+        result = (None, f"GET {CHANGELOG}", True)
+    setattr(ctx, _CHANGELOG_CACHE, result)
+    return result
 
 
-def run(section, ctx) -> list[dict]:
+def resolve_plugin_version(
+    ctx,
+) -> tuple[tuple[int, ...] | None, str, bool]:
+    """WordPress + asset ``?ver=``, else at most one shared change_log.txt GET.
+
+    Returns ``(version, where, seen)``. ``seen`` is True when a gravityforms
+    plugin path was already present in crawled HTML (or the changelog proved
+    the plugin is installed). Non-WordPress roots return ``(None, "", False)``.
+    """
     headers, body = root_observation(ctx)
     if not looks_like_wordpress(headers, body):
-        return []
+        return None, "", False
 
     version, where, seen = observe_html(body)
 
@@ -209,6 +230,12 @@ def run(section, ctx) -> list[dict]:
         if is_plugin:
             where = log_where
             version = log_version
+
+    return version, where, seen
+
+
+def run(section, ctx) -> list[dict]:
+    version, where, seen = resolve_plugin_version(ctx)
 
     if version is not None:
         if affected(version):
@@ -244,8 +271,9 @@ CHECK = CveCheck(
     does_not_send=(
         "Never requests admin-ajax.php, REST form submission, or any form "
         "endpoint. No POSTs or form submissions, no serialized PHP strings, "
-        "no O:-style payloads, no file uploads, no writes, and nothing to "
-        "/wp-admin. Never more than the single change_log.txt GET."
+        "no O:-style payloads, no file uploads, no gf_upload / GFAsyncUpload, "
+        "no writes, and nothing to /wp-admin. Never more than the single "
+        "change_log.txt GET (shared with the chunked-upload sibling check)."
     ),
     run=run,
 )
