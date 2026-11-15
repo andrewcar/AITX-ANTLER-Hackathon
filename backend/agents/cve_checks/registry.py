@@ -30,6 +30,7 @@ from . import (
     wordpress,
     wp_data_access,
     wp_duplicate,
+    wpforo,
     xen_orchestra,
     yootheme,
 )
@@ -67,6 +68,7 @@ CHECKS: tuple[CveCheck, ...] = (
     gravity_forms.CHECK,
     gravity_forms_chunked.CHECK,
     craft_cms.CHECK,
+    wpforo.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
