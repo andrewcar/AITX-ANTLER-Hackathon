@@ -19,6 +19,7 @@ from . import (
     mlflow_gateway,
     nextjs,
     nextjs_nov2026,
+    ninja_forms_uploads,
     node_brotli,
     nodered,
     php2shell,
@@ -69,6 +70,7 @@ CHECKS: tuple[CveCheck, ...] = (
     gravity_forms_chunked.CHECK,
     craft_cms.CHECK,
     wpforo.CHECK,
+    ninja_forms_uploads.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
