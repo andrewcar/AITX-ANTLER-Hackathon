@@ -11,6 +11,7 @@ from . import (
     dependency_files,
     gpustack_auth,
     gravity_forms,
+    gravity_forms_chunked,
     langflow,
     latepoint,
     magento,
@@ -65,6 +66,7 @@ CHECKS: tuple[CveCheck, ...] = (
     acf_extended_pro.CHECK,
     commerce_core.CHECK,
     gravity_forms.CHECK,
+    gravity_forms_chunked.CHECK,
     craft_cms.CHECK,
     wpforo.CHECK,
 )
