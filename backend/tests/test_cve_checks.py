@@ -33,6 +33,7 @@ from agents.cve_checks.slicewp import CHECK as SLICEWP
 from agents.cve_checks.gravity_forms import CHECK as GRAVITY_FORMS
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.craft_cms import CHECK as CRAFT_CMS
+from agents.cve_checks.ninja_forms_uploads import CHECK as NINJA_FORMS_UPLOADS
 from agents.cve_checks.apache_mod_http2 import CHECK as APACHE_MOD_HTTP2
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
 from agents.cve_checks.vite_dev_server import CHECK as VITE_DEV
@@ -94,6 +95,9 @@ BANNED = (
     "[attribute]",
     "%5Battribute%5D",
     "craft.search",
+    "saveProgress",
+    "nf_ajax_submit",
+    "file_path",
 )
 
 
@@ -249,6 +253,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/modules/contrib/commerce/commerce.info.yml") == 0
     # Gravity Forms only probes change_log.txt when WordPress + plugin path are present.
     assert paths.count("/wp-content/plugins/gravityforms/change_log.txt") == 0
+    # Ninja Forms File Uploads only probes changelog.txt when WordPress + plugin path are present.
+    assert paths.count("/wp-content/plugins/ninja-forms-uploads/changelog.txt") == 0
     # Craft CMS only probes /admin/login after a Craft fingerprint on the root response.
     assert paths.count("/admin/login") == 0
     assert paths.count("/wp-content/uploads/") == 0
@@ -280,6 +286,9 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "jsonapi" not in blob.lower()
     assert "attribute" not in blob.lower()
     assert "craft.search" not in blob.lower()
+    assert "ninja-forms-uploads" not in blob.lower()
+    assert "saveprogress" not in blob.lower()
+    assert "nf_ajax_submit" not in blob.lower()
     assert "/admin/login" not in paths
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
@@ -4638,3 +4647,291 @@ def test_craft_cms_check_source_is_get_only_static_fingerprint():
     assert "4.18.9" in CRAFT_CMS.fixed
     assert "5.11.2" in CRAFT_CMS.fixed
     assert CRAFT_CMS.id == "craft-cms"
+
+
+# --- Ninja Forms File Uploads (CVE-2026-126537) -----------------------------
+
+NFU_CHANGELOG = "/wp-content/plugins/ninja-forms-uploads/changelog.txt"
+_NFU_WP_ROOT = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="https://api.w.org/" href="http://127.0.0.1:8081/wp-json/" />'
+)
+_NFU_BANNED = (
+    "saveProgress",
+    "file_path",
+    "nf_ajax_submit",
+    "admin-ajax.php",
+    "admin-ajax",
+    "/wp-admin",
+    "files[].data",
+)
+
+
+def _nfu_asset_html(version: str | None = None) -> str:
+    if version is None:
+        return (
+            f"{_NFU_WP_ROOT}"
+            '<script src="/wp-content/plugins/ninja-forms-uploads/assets/'
+            'js/front-end.js"></script>'
+            '<link rel="stylesheet" href="/wp-content/plugins/'
+            'ninja-forms-uploads/assets/css/display-front.css" />'
+        )
+    return (
+        f"{_NFU_WP_ROOT}"
+        f'<script src="/wp-content/plugins/ninja-forms-uploads/assets/'
+        f'js/front-end.js?ver={version}"></script>'
+        f'<link rel="stylesheet" href="/wp-content/plugins/'
+        f'ninja-forms-uploads/assets/css/display-front.css?ver={version}" />'
+    )
+
+
+def _nfu_changelog(version: str) -> str:
+    return (
+        f"#### {version} (2 November 2026)\n"
+        "\n"
+        "Security Enhancements:\n"
+        "\n"
+        "- harden handling of uploaded file data during form submission\n"
+        "- bind stored uploads to their form and field in merge tags\n"
+        "\n"
+        "Bug Fixes:\n"
+        "\n"
+        "- fix Ninja Forms File Uploads merge tags for NF_FU fields\n"
+    )
+
+
+def _assert_nfu_passive(transport):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths)
+    for banned in _NFU_BANNED:
+        assert banned.lower() not in blob.lower()
+    for path in paths:
+        assert path == NFU_CHANGELOG
+    assert paths.count(NFU_CHANGELOG) <= 1
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("3.3.36", True), ("3.3.35", True), ("3.3.0", True), ("3.2.0", True),
+    ("3.3.37", False), ("3.3.38", False), ("3.4.0", False), ("4.0.0", False),
+])
+def test_ninja_forms_uploads_version_matrix(version, vulnerable):
+    from agents.cve_checks.ninja_forms_uploads import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_ninja_forms_uploads_no_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[NFU_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _nfu_changelog("3.3.36"),
+    }
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS_UPLOADS.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_ninja_forms_uploads_wordpress_without_plugin_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[NFU_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _nfu_changelog("3.3.36"),
+    }
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS_UPLOADS.run({}, _ctx(body=_NFU_WP_ROOT)) == []
+    assert transport.calls == []
+
+
+def test_ninja_forms_uploads_asset_ver_336_is_critical_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS_UPLOADS.run({}, _ctx(body=_nfu_asset_html("3.3.36")))
+    assert transport.calls == []
+    assert NINJA_FORMS_UPLOADS.agent == "misconfig"
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "ninja-forms-uploads:3.3.36"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-126537" in found[0]["title"]
+    assert "CVE-2026-126537" in found[0]["evidence"]
+    assert "3.3.37" in found[0]["fix"]
+    assert "license-gated" in found[0]["fix"]
+    assert "wp-config.php" in found[0]["fix"]
+    assert "Rapid7" in found[0]["evidence"]
+    assert "VulnCheck" in found[0]["evidence"]
+    assert "saveProgress" not in " ".join(call[1] for call in transport.calls)
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+def test_ninja_forms_uploads_337_is_not_flagged(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS_UPLOADS.run({}, _ctx(body=_nfu_asset_html("3.3.37"))) == []
+    assert transport.calls == []
+
+
+def test_ninja_forms_uploads_plugin_present_no_version_one_get_then_info(
+    monkeypatch,
+):
+    transport = Transport()
+    transport.routes[NFU_CHANGELOG] = {
+        "status": 404,
+        "content_type": "text/plain",
+        "body": "missing",
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS_UPLOADS.run({}, _ctx(body=_nfu_asset_html(None)))
+    _assert_nfu_passive(transport)
+    assert [call[1] for call in transport.calls] == [NFU_CHANGELOG]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "ninja-forms-uploads:unknown"
+    assert "CVE-2026-126537" in found[0]["title"]
+
+
+def test_ninja_forms_uploads_changelog_fallback_336_is_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[NFU_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _nfu_changelog("3.3.36"),
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS_UPLOADS.run({}, _ctx(body=_nfu_asset_html(None)))
+    _assert_nfu_passive(transport)
+    assert [call[1] for call in transport.calls] == [NFU_CHANGELOG]
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "ninja-forms-uploads:3.3.36"
+    assert "CVE-2026-126537" in found[0]["evidence"]
+    assert "3.3.37" in found[0]["fix"]
+
+
+def test_ninja_forms_uploads_changelog_fallback_337_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[NFU_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _nfu_changelog("3.3.37"),
+    }
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS_UPLOADS.run({}, _ctx(body=_nfu_asset_html(None))) == []
+    _assert_nfu_passive(transport)
+
+
+def test_ninja_forms_uploads_at_most_one_changelog_get_and_never_form_endpoints(
+    monkeypatch,
+):
+    transport = Transport()
+    transport.routes[NFU_CHANGELOG] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _nfu_changelog("3.3.36"),
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-admin/admin-ajax.php?action=nf_ajax_submit"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS_UPLOADS.run({}, _ctx(body=_nfu_asset_html(None)))
+    _assert_nfu_passive(transport)
+    assert [call[1] for call in transport.calls] == [NFU_CHANGELOG]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "admin-ajax" not in blob
+    assert "nf_ajax_submit" not in blob
+    assert "saveprogress" not in blob
+    assert "file_path" not in blob
+    assert "wp-admin" not in blob
+
+
+def test_ninja_forms_uploads_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_nfu_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                NINJA_FORMS_UPLOADS.run({}, _ctx(body=_nfu_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_ninja_forms_uploads_requests_are_get_audited_and_have_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_nfu_changelog("3.3.36").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_nfu_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = NINJA_FORMS_UPLOADS.run({}, _ctx(body=_nfu_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert NFU_CHANGELOG in rows[-1]["url"]
+    assert "body" not in rows[-1]
+
+
+def test_ninja_forms_uploads_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://nfu.attacker.example/wp-content/plugins/"
+            "ninja-forms-uploads/changelog.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_ninja_forms_uploads_check_source_is_get_only_static_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "ninja_forms_uploads.py"
+    ).read_text(encoding="utf-8")
+    assert "fetch_path(ctx, CHANGELOG" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "looks_like_wordpress" in text
+    assert "changelog.txt" in text
+    assert "readme.txt" in text  # documents why changelog was chosen over readme
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "saveProgress" in text
+    assert "nf_ajax_submit" in text
+    assert "file_path" in text
+    assert "Never submits" in text or "never submits" in text.lower()
+    assert NINJA_FORMS_UPLOADS.agent == "misconfig"
+    assert NINJA_FORMS_UPLOADS.cve == "CVE-2026-126537"
+    assert NINJA_FORMS_UPLOADS.id == "ninja-forms-uploads"
+    assert "3.3.37" in NINJA_FORMS_UPLOADS.fixed
