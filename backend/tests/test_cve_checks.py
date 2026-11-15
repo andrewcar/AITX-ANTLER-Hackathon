@@ -32,6 +32,7 @@ from agents.cve_checks.registration_form_woocommerce import CHECK as TGWCFB
 from agents.cve_checks.slicewp import CHECK as SLICEWP
 from agents.cve_checks.gravity_forms import CHECK as GRAVITY_FORMS
 from agents.cve_checks.gravity_forms_chunked import CHECK as GRAVITY_FORMS_CHUNKED
+from agents.cve_checks.ai_engine import CHECK as AI_ENGINE
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.craft_cms import CHECK as CRAFT_CMS
 from agents.cve_checks.wpforo import CHECK as WPFORO
@@ -106,6 +107,9 @@ BANNED = (
     "saveProgress",
     "nf_ajax_submit",
     "file_path",
+    "wp-json/mwai",
+    "/wp-json/mwai/",
+    "mwai/",
 )
 
 
@@ -267,6 +271,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/ninja-forms-uploads/changelog.txt") == 0
     # Craft CMS only probes /admin/login after a Craft fingerprint on the root response.
     assert paths.count("/admin/login") == 0
+    # AI Engine only probes readme when WordPress + plugin path are present.
+    assert paths.count("/wp-content/plugins/ai-engine/readme.txt") == 0
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme fetch_page of in-scope `/` plus xen-orchestra fallback when recon body is empty
     assert paths.count("/") == 2
@@ -303,6 +309,9 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "saveprogress" not in blob.lower()
     assert "nf_ajax_submit" not in blob.lower()
     assert "/admin/login" not in paths
+    assert "wp-json/mwai" not in blob.lower()
+    assert all("mcp" not in path.lower() for path in paths)
+    assert "ai-engine" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -5139,6 +5148,7 @@ def test_wpforo_check_source_is_get_only_static_fingerprint():
     assert "3.2.3" in WPFORO.fixed
     assert WPFORO.id == "wpforo"
 
+
 # --- Ninja Forms File Uploads (CVE-2026-126537) -----------------------------
 
 NFU_CHANGELOG = "/wp-content/plugins/ninja-forms-uploads/changelog.txt"
@@ -5425,3 +5435,290 @@ def test_ninja_forms_uploads_check_source_is_get_only_static_fingerprint():
     assert NINJA_FORMS_UPLOADS.cve == "CVE-2026-126537"
     assert NINJA_FORMS_UPLOADS.id == "ninja-forms-uploads"
     assert "3.3.37" in NINJA_FORMS_UPLOADS.fixed
+
+
+# --- AI Engine (CVE-2026-123478) --------------------------------------------
+
+AI_ENGINE_README = "/wp-content/plugins/ai-engine/readme.txt"
+_AI_ENGINE_WP_ROOT = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="https://api.w.org/" href="http://127.0.0.1:8081/wp-json/" />'
+)
+_AI_ENGINE_BANNED = (
+    "wp-json/mwai",
+    "/wp-json/mwai/",
+    "mwai/",
+    "mcp",
+    "admin-ajax.php",
+    "/wp-admin",
+    "<script",
+    "chatbot",
+)
+
+
+def _ai_engine_asset_html(version: str | None = None) -> str:
+    if version is None:
+        return (
+            f"{_AI_ENGINE_WP_ROOT}"
+            '<script src="/wp-content/plugins/ai-engine/app/index.js">'
+            "</script>"
+            '<link rel="stylesheet" href="/wp-content/plugins/ai-engine/'
+            'app/index.css" />'
+        )
+    return (
+        f"{_AI_ENGINE_WP_ROOT}"
+        f'<script src="/wp-content/plugins/ai-engine/app/index.js'
+        f'?ver={version}"></script>'
+        f'<link rel="stylesheet" href="/wp-content/plugins/ai-engine/'
+        f'app/index.css?ver={version}" />'
+    )
+
+
+def _ai_engine_readme(stable: str) -> str:
+    return (
+        "=== AI Engine ===\n"
+        f"Stable tag: {stable}\n"
+        "Contributors: tigroumeow\n"
+        "Requires at least: 5.0\n\n"
+        "AI Engine – MCP Server & AI Chatbot by Meow Apps.\n"
+    )
+
+
+def _assert_ai_engine_passive(transport):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths)
+    for banned in _AI_ENGINE_BANNED:
+        assert banned.lower() not in blob.lower()
+    for path in paths:
+        assert path == AI_ENGINE_README
+        assert "wp-json/mwai" not in path.lower()
+        assert "mcp" not in path.lower()
+    assert paths.count(AI_ENGINE_README) <= 1
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("3.9.1", True), ("3.9.0", True), ("3.8.0", True), ("3.0.0", True),
+    ("3.9.2", False), ("3.9.3", False), ("3.10.0", False), ("4.0.0", False),
+])
+def test_ai_engine_version_matrix(version, vulnerable):
+    from agents.cve_checks.ai_engine import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_ai_engine_no_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ai_engine_readme("3.9.1"),
+    }
+    _install(monkeypatch, transport)
+    assert AI_ENGINE.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_ai_engine_wordpress_without_plugin_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ai_engine_readme("3.9.1"),
+    }
+    transport.routes["/wp-json/mwai/v1/simpleChatbotQuery"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    assert AI_ENGINE.run({}, _ctx(body=_AI_ENGINE_WP_ROOT)) == []
+    assert transport.calls == []
+
+
+def test_ai_engine_asset_ver_391_is_high_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html("3.9.1")))
+    assert transport.calls == []
+    assert AI_ENGINE.agent == "misconfig"
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "ai-engine:3.9.1"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-123478" in found[0]["title"]
+    assert "CVE-2026-123478" in found[0]["evidence"]
+    assert "3.9.2" in found[0]["fix"]
+    assert "chatbot" in found[0]["fix"].lower()
+    assert "admin" in found[0]["fix"].lower()
+    assert "CVSS 7.1" in found[0]["evidence"]
+    assert "VulnCheck" in found[0]["evidence"]
+    assert "wordsec.net" in found[0]["evidence"]
+    assert "laskyr.com" in found[0]["evidence"]
+    assert "vexday.io" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+def test_ai_engine_392_is_not_flagged(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html("3.9.2"))) == []
+    assert transport.calls == []
+
+
+def test_ai_engine_plugin_present_no_version_one_get_then_info(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 404,
+        "content_type": "text/plain",
+        "body": "missing",
+    }
+    _install(monkeypatch, transport)
+    found = AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    _assert_ai_engine_passive(transport)
+    assert [call[1] for call in transport.calls] == [AI_ENGINE_README]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "ai-engine:unknown"
+    assert "CVE-2026-123478" in found[0]["title"]
+
+
+def test_ai_engine_readme_fallback_391_is_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ai_engine_readme("3.9.1"),
+    }
+    _install(monkeypatch, transport)
+    found = AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    _assert_ai_engine_passive(transport)
+    assert [call[1] for call in transport.calls] == [AI_ENGINE_README]
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "ai-engine:3.9.1"
+    assert "CVE-2026-123478" in found[0]["evidence"]
+    assert "3.9.2" in found[0]["fix"]
+
+
+def test_ai_engine_readme_fallback_392_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ai_engine_readme("3.9.2"),
+    }
+    _install(monkeypatch, transport)
+    assert AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None))) == []
+    _assert_ai_engine_passive(transport)
+
+
+def test_ai_engine_at_most_one_readme_get_and_never_mwai_or_mcp(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ai_engine_readme("3.9.1"),
+    }
+    transport.routes["/wp-json/mwai/v1/simpleChatbotQuery"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-json/mwai/v1/mcp"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/mcp"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    _assert_ai_engine_passive(transport)
+    assert [call[1] for call in transport.calls] == [AI_ENGINE_README]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "high"
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "wp-json/mwai" not in blob
+    assert "mcp" not in blob
+    assert "chatbot" not in blob
+    assert "<script" not in blob
+
+
+def test_ai_engine_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_ai_engine_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_ai_engine_requests_are_get_audited_and_have_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_ai_engine_readme("3.9.1").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_ai_engine_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "high"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert AI_ENGINE_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "wp-json/mwai" not in rows[-1]["url"].lower()
+    assert "mcp" not in rows[-1]["url"].lower()
+
+
+def test_ai_engine_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://ai-engine.attacker.example/wp-content/plugins/ai-engine/"
+            "readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_ai_engine_check_source_is_get_only_static_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "ai_engine.py"
+    ).read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "looks_like_wordpress" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "wp-json/mwai" in text.lower()
+    assert "Never sends chatbot" in text or "never sends chatbot" in text.lower()
+    assert AI_ENGINE.agent == "misconfig"
+    assert AI_ENGINE.cve == "CVE-2026-123478"
+    assert AI_ENGINE.id == "ai-engine"
+    assert "3.9.2" in AI_ENGINE.fixed
