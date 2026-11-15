@@ -30,6 +30,7 @@ from . import (
     wordpress,
     wp_data_access,
     wp_duplicate,
+    wpforo,
     xen_orchestra,
     yootheme,
 )
@@ -66,6 +67,7 @@ CHECKS: tuple[CveCheck, ...] = (
     commerce_core.CHECK,
     gravity_forms.CHECK,
     craft_cms.CHECK,
+    wpforo.CHECK,
     ai_engine.CHECK,
 )
 
