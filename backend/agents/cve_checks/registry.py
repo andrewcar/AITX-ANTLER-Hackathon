@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from . import (
     acf_extended_pro,
+    ai_engine,
     amelia_pro,
     apache_mod_http2,
     commerce_core,
@@ -65,6 +66,7 @@ CHECKS: tuple[CveCheck, ...] = (
     commerce_core.CHECK,
     gravity_forms.CHECK,
     craft_cms.CHECK,
+    ai_engine.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
