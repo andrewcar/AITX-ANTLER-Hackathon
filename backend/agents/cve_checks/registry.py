@@ -7,6 +7,7 @@ from . import (
     amelia_pro,
     apache_mod_http2,
     automatorwp_webhooks,
+    bricksforge,
     btcpay,
     commerce_core,
     contact_form_7,
@@ -78,6 +79,7 @@ CHECKS: tuple[CveCheck, ...] = (
     ai_engine.CHECK,
     masteriyo.CHECK,
     btcpay.CHECK,
+    bricksforge.CHECK,
     automatorwp_webhooks.CHECK,
 )
 
