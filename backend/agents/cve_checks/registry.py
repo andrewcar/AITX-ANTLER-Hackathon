@@ -6,6 +6,7 @@ from . import (
     ai_engine,
     amelia_pro,
     apache_mod_http2,
+    automatorwp_webhooks,
     btcpay,
     commerce_core,
     contact_form_7,
@@ -77,6 +78,7 @@ CHECKS: tuple[CveCheck, ...] = (
     ai_engine.CHECK,
     masteriyo.CHECK,
     btcpay.CHECK,
+    automatorwp_webhooks.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
