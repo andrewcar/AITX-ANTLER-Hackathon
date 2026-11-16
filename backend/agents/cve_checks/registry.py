@@ -35,6 +35,7 @@ from . import (
     wpforo,
     xen_orchestra,
     yootheme,
+    masteriyo,
 )
 from .spec import CveCheck
 
@@ -73,6 +74,7 @@ CHECKS: tuple[CveCheck, ...] = (
     wpforo.CHECK,
     ninja_forms_uploads.CHECK,
     ai_engine.CHECK,
+    masteriyo.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
