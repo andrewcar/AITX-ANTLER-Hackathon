@@ -52,6 +52,7 @@ from agents.cve_checks.wp_duplicate import CHECK as WP_DUPLICATE
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
 from agents.cve_checks.btcpay import CHECK as BTCPAY
 from agents.cve_checks.bricksforge import CHECK as BRICKSFORGE
+from agents.cve_checks.automatorwp_webhooks import CHECK as AUTOMATORWP_WEBHOOKS
 import planner
 import main
 import orchestrator
@@ -120,6 +121,14 @@ BANNED = (
     "temporaryFileUploads",
     "/wp-content/uploads/bricksforge/tmp/",
     "bricksforge/tmp",
+    "/wp-json/automatorwp",
+    "automatorwp/webhooks",
+    "wp-json/automatorwp",
+    "lostpassword",
+    "wp-login.php",
+    "/wp-admin",
+    "user_id=",
+    "password=",
 )
 
 
@@ -328,6 +337,11 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "bricksforge" not in blob.lower()
     assert "temporaryfileuploads" not in blob.lower()
     assert "wp-json/bricksforge" not in blob.lower()
+    # AutomatorWP Webhooks only probes after WordPress is visible in crawled HTML.
+    assert paths.count("/wp-content/plugins/automatorwp-webhooks/readme.txt") == 0
+    assert paths.count("/wp-content/plugins/automatorwp-pro-webhooks/readme.txt") == 0
+    assert "automatorwp" not in blob.lower()
+    assert "/wp-json/automatorwp" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2581,15 +2595,17 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "bricksforge"
+    assert ids[-1] == "automatorwp-webhooks"
+    assert ids[-2] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
-        "btcpay-server",
+        "btcpay-server", "bricksforge", "automatorwp-webhooks",
     ):
         assert required in ids
-    assert ids[-2] == "btcpay-server"
+    assert ids[-3] == "btcpay-server"
     assert BTCPAY.agent == "secrets"
     assert BRICKSFORGE.agent == "misconfig"
+    assert AUTOMATORWP_WEBHOOKS.agent == "auth"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -6400,3 +6416,326 @@ def test_bricksforge_check_source_is_get_only_static_fingerprint():
     assert BRICKSFORGE.id == "bricksforge"
     assert "3.1.8.10" in BRICKSFORGE.fixed
     assert "4.0.1" in BRICKSFORGE.fixed
+
+# --- AutomatorWP Pro Webhooks (CVE-2026-126173) -----------------------------
+
+AWP_PRIMARY = "/wp-content/plugins/automatorwp-webhooks/readme.txt"
+AWP_ALTERNATE = "/wp-content/plugins/automatorwp-pro-webhooks/readme.txt"
+_AWP_WP_ROOT = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="https://api.w.org/" href="http://127.0.0.1:8081/wp-json/" />'
+)
+_AWP_BANNED = (
+    "/wp-json/automatorwp",
+    "automatorwp/webhooks",
+    "wp-json/automatorwp",
+    "password=",
+    "user_id=",
+    "lostpassword",
+    "wp-login.php",
+    "/wp-admin",
+    "admin-ajax.php",
+)
+
+
+def _awp_asset_html(version: str | None = None) -> str:
+    if version is None:
+        return (
+            f"{_AWP_WP_ROOT}"
+            '<script src="/wp-content/plugins/automatorwp-webhooks/assets/js/'
+            'automatorwp-webhooks-admin.js"></script>'
+        )
+    return (
+        f"{_AWP_WP_ROOT}"
+        f'<script src="/wp-content/plugins/automatorwp-webhooks/assets/js/'
+        f'automatorwp-webhooks-admin.js?ver={version}"></script>'
+    )
+
+
+def _awp_readme(stable: str | None, *, name="AutomatorWP - Webhooks") -> str:
+    lines = [
+        f"=== {name} ===",
+        "Contributors: automatorwp, rubengc, eneribs",
+        "Requires at least: 4.4",
+        "Tested up to: 7.1",
+    ]
+    if stable is not None:
+        lines.append(f"Stable tag: {stable}")
+    lines.extend(
+        [
+            "",
+            "New triggers and actions to send and receive data from webhooks.",
+            "",
+            "== Changelog ==",
+            "",
+        ]
+    )
+    if stable is not None:
+        lines.extend([f"= {stable} =", "", "* Security release notes"])
+    return "\n".join(lines) + "\n"
+
+
+def _assert_awp_passive(transport, *, max_gets=2):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    assert len(paths) <= max_gets
+    allowed = {AWP_PRIMARY, AWP_ALTERNATE}
+    assert set(paths) <= allowed
+    blob = " ".join(paths).lower()
+    for banned in _AWP_BANNED:
+        assert banned.lower() not in blob
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("1.4.4", True), ("1.4.3", True), ("1.3.6", True), ("1.0.0", True),
+    ("1.4.5", False), ("1.4.6", False), ("1.5.0", False), ("2.0.0", False),
+])
+def test_automatorwp_webhooks_version_matrix(version, vulnerable):
+    from agents.cve_checks.automatorwp_webhooks import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_automatorwp_webhooks_144_is_medium_unconfirmed_config_dependent(
+    monkeypatch,
+):
+    transport = Transport()
+    transport.routes[AWP_PRIMARY] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _awp_readme("1.4.4"),
+    }
+    _install(monkeypatch, transport)
+    found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_AWP_WP_ROOT))
+    _assert_awp_passive(transport, max_gets=1)
+    assert transport.calls == [("GET", AWP_PRIMARY, None, False)]
+    assert AUTOMATORWP_WEBHOOKS.agent == "auth"
+    assert len(found) == 1
+    assert found[0]["severity"] == "medium"
+    assert found[0]["check"]["match"] == "automatorwp-webhooks:1.4.4"
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "config-dependent" in found[0]["evidence"].lower()
+    assert "cannot be seen from outside" in found[0]["evidence"].lower()
+    assert "CVE-2026-126173" in found[0]["title"]
+    assert "1.4.5" in found[0]["fix"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "Brandefense" in found[0]["evidence"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Receive Webhook" in found[0]["fix"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+def test_automatorwp_webhooks_145_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[AWP_PRIMARY] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _awp_readme("1.4.5"),
+    }
+    _install(monkeypatch, transport)
+    found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_AWP_WP_ROOT))
+    _assert_awp_passive(transport, max_gets=1)
+    assert found == []
+
+
+def test_automatorwp_webhooks_version_via_ver_query(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_awp_asset_html("1.4.4")))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "medium"
+    assert found[0]["check"]["match"] == "automatorwp-webhooks:1.4.4"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "config-dependent" in found[0]["evidence"].lower()
+
+
+def test_automatorwp_webhooks_fixed_ver_query_is_none(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_awp_asset_html("1.4.5"))) == []
+    assert transport.calls == []
+
+
+def test_automatorwp_webhooks_non_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[AWP_PRIMARY] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _awp_readme("1.4.4"),
+    }
+    _install(monkeypatch, transport)
+    assert AUTOMATORWP_WEBHOOKS.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_automatorwp_webhooks_404_has_no_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[AWP_PRIMARY] = {"status": 404, "body": ""}
+    transport.routes[AWP_ALTERNATE] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_AWP_WP_ROOT))
+    _assert_awp_passive(transport, max_gets=2)
+    assert found == []
+
+
+def test_automatorwp_webhooks_unknown_version_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[AWP_PRIMARY] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _awp_readme(None),
+    }
+    _install(monkeypatch, transport)
+    found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_AWP_WP_ROOT))
+    _assert_awp_passive(transport, max_gets=1)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "automatorwp-webhooks:unknown"
+    assert "CVE-2026-126173" in found[0]["title"]
+
+
+def test_automatorwp_webhooks_finding_labeled_config_dependent_unconfirmed(
+    monkeypatch,
+):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_awp_asset_html("1.4.4")))
+    assert found
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "config-dependent" in found[0]["evidence"].lower()
+    assert "cannot be seen from outside" in found[0]["evidence"].lower()
+
+
+def test_automatorwp_webhooks_request_budget_at_most_two_get_audited(
+    monkeypatch,
+):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        path = urlparse(req.full_url).path
+        if path == AWP_PRIMARY:
+            return _Resp(status=404, body=b"missing")
+        return _Resp(
+            body=_awp_readme(
+                "1.4.4", name="AutomatorWP Pro Webhooks"
+            ).encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/",
+        actor="tester",
+        run_id="run_awp_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("auth"):
+            found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_AWP_WP_ROOT))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] <= 2
+    assert seen["calls"] == 2
+    assert seen["methods"] == ["GET", "GET"]
+    assert seen["data"] == [None, None]
+    assert found and found[0]["severity"] == "medium"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "auth"
+    assert "body" not in rows[-1]
+    blob = " ".join(row["url"] for row in rows[-2:]).lower()
+    for banned in _AWP_BANNED:
+        assert banned.lower() not in blob
+
+
+def test_automatorwp_webhooks_kill_switch_before_first_request_is_none(
+    monkeypatch,
+):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/",
+        actor="tester",
+        run_id="run_awp_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_AWP_WP_ROOT))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_automatorwp_webhooks_alternate_readme_fallback(monkeypatch):
+    transport = Transport()
+    transport.routes[AWP_PRIMARY] = {"status": 404, "body": ""}
+    transport.routes[AWP_ALTERNATE] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _awp_readme("1.4.4", name="AutomatorWP Pro Webhooks"),
+    }
+    _install(monkeypatch, transport)
+    found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_AWP_WP_ROOT))
+    _assert_awp_passive(transport, max_gets=2)
+    assert [call[1] for call in transport.calls] == [AWP_PRIMARY, AWP_ALTERNATE]
+    assert found[0]["severity"] == "medium"
+    assert found[0]["check"]["match"] == "automatorwp-webhooks:1.4.4"
+
+
+def test_automatorwp_webhooks_plugin_present_no_version_then_info(monkeypatch):
+    transport = Transport()
+    transport.routes[AWP_PRIMARY] = {"status": 404, "body": ""}
+    transport.routes[AWP_ALTERNATE] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    found = AUTOMATORWP_WEBHOOKS.run({}, _ctx(body=_awp_asset_html(None)))
+    _assert_awp_passive(transport, max_gets=2)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "automatorwp-webhooks:unknown"
+
+
+def test_automatorwp_webhooks_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://awp.attacker.example/wp-content/plugins/"
+            "automatorwp-webhooks/readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_automatorwp_webhooks_check_source_is_get_only_passive():
+    text = (
+        ROOT / "agents" / "cve_checks" / "automatorwp_webhooks.py"
+    ).read_text(encoding="utf-8")
+    assert 'PRIMARY = "/wp-content/plugins/automatorwp-webhooks/readme.txt"' in text
+    assert (
+        'ALTERNATE = "/wp-content/plugins/automatorwp-pro-webhooks/readme.txt"'
+        in text
+    )
+    assert "fetch_path(ctx, path" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "looks_like_wordpress" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "/wp-json/automatorwp" in text
+    assert "/wp-admin" in text
+    assert AUTOMATORWP_WEBHOOKS.agent == "auth"
+    assert AUTOMATORWP_WEBHOOKS.cve == "CVE-2026-126173"
+    assert AUTOMATORWP_WEBHOOKS.id == "automatorwp-webhooks"
+    assert "1.4.5" in AUTOMATORWP_WEBHOOKS.fixed
