@@ -6,6 +6,7 @@ from . import (
     ai_engine,
     amelia_pro,
     apache_mod_http2,
+    btcpay,
     commerce_core,
     contact_form_7,
     craft_cms,
@@ -75,6 +76,7 @@ CHECKS: tuple[CveCheck, ...] = (
     ninja_forms_uploads.CHECK,
     ai_engine.CHECK,
     masteriyo.CHECK,
+    btcpay.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
