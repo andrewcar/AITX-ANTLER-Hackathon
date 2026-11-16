@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (560 test functions).
+- **Tests:** `pytest` (632 test functions).
 
 ## Architecture
 
@@ -105,6 +105,7 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | `ai-engine` (misconfig) | CVE-2026-123478 | Confirm WordPress from the already-fetched root response, then plugin asset `?ver=` already in the page HTML. When the plugin path is present without a version, one GET `/wp-content/plugins/ai-engine/readme.txt` Stable tag. High, version unconfirmed, for AI Engine (Meow Apps MCP Server & AI Chatbot) through 3.9.1 (fixed in 3.9.2; CVSS 7.1). VulnCheck observed exploitation before CISA listing. Info when the plugin is present but the version is hidden. Non-WordPress targets and pages without an `ai-engine` asset yield no request. | Never sends chatbot messages. Never calls `/wp-json/mwai/` or MCP endpoints. Never submits HTML or script content. No POSTs or form submissions, no uploads, no writes, and nothing to `/wp-admin`. Never more than the single `readme.txt` GET. |
 | `masteriyo-lms` (recon) | CVE-2026-73996 | One GET `/wp-content/plugins/learning-management-system/readme.txt`. Critical, version unconfirmed, when that file is the Masteriyo LMS readme and the Stable tag is 2.3.2 or lower (fixed in 2.3.3). Info when the readme is Masteriyo LMS but the Stable tag cannot be parsed. | No upload, no POST, PUT, or DELETE, no login, no PHP body, no path traversal, and no request to a plugin upload route. |
 | `btcpay-server` (secrets) | CVE-2026-119757 | Product footer `© BTCPay Server v…` already in the page HTML, or BTCPay layout and checkout static paths when the version is absent. If that HTML was not stored, one GET of the in-scope page with no query string and redirects disabled. Critical, version unconfirmed, for every version before 2.4.2, including 2.4.2 release candidates (fixed in 2.4.2). Info when BTCPay Server is present but the version is missing or ambiguous. | Never requests a path containing macaroon, a credential file, a Lightning or LND admin API, or a Greenfield API. No login, no POST, no request body, no exploit payload, and no redirect following. |
+| `bricksforge` (misconfig) | CVE-2026-85097 | Confirm WordPress from the already-fetched root response, then plugin asset `?ver=` already in the page HTML. When the version is still unknown, at most two GETs of `/wp-content/plugins/bricksforge/readme.txt` and `/wp-content/plugins/bricksforge/changelog.txt`. Critical, version unconfirmed, for Bricksforge through 3.1.8.9 (fixed in 3.1.8.10, also 4.0.0+; 4.0.1 recommended for related Pro Forms upload hardening). Patchstack CVSS 10 / CNA CVSS 9.8; known-exploited (Patchstack telemetry since 7 October 2026; not CISA KEV). Info/low confidence when the plugin is present but the version is hidden. Non-WordPress targets yield no request. | Never POSTs to `/wp-json/bricksforge/v1/form_submit`. Never calls `admin-ajax` (`bricksforge_regenerate_nonce`, `bricksforge_form_submit`). Never sends nonce requests, `temporaryFileUploads` parameters, uploads, polyglot files, requests to `/wp-content/uploads/bricksforge/tmp/`, writes, malformed input, or anything to `/wp-admin`. Never more than two static version-file GETs. |
 
 The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
@@ -136,7 +137,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (560 test functions in `backend/tests/`):
+Tests (632 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q
