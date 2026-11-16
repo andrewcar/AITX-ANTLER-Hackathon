@@ -51,6 +51,7 @@ from agents.cve_checks.wp_data_access import CHECK as WP_DATA_ACCESS
 from agents.cve_checks.wp_duplicate import CHECK as WP_DUPLICATE
 from agents.cve_checks.yootheme import CHECK as YOOTHEME
 from agents.cve_checks.btcpay import CHECK as BTCPAY
+from agents.cve_checks.bricksforge import CHECK as BRICKSFORGE
 import planner
 import main
 import orchestrator
@@ -112,6 +113,13 @@ BANNED = (
     "wp-json/mwai",
     "/wp-json/mwai/",
     "mwai/",
+    "wp-json/bricksforge",
+    "/wp-json/bricksforge/v1/form_submit",
+    "bricksforge_regenerate_nonce",
+    "bricksforge_form_submit",
+    "temporaryFileUploads",
+    "/wp-content/uploads/bricksforge/tmp/",
+    "bricksforge/tmp",
 )
 
 
@@ -275,6 +283,9 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/admin/login") == 0
     # AI Engine only probes readme when WordPress + plugin path are present.
     assert paths.count("/wp-content/plugins/ai-engine/readme.txt") == 0
+    # Bricksforge only probes after WordPress is visible in crawled HTML.
+    assert paths.count("/wp-content/plugins/bricksforge/readme.txt") == 0
+    assert paths.count("/wp-content/plugins/bricksforge/changelog.txt") == 0
     assert paths.count("/wp-content/uploads/") == 0
     # yootheme and btcpay each fetch the in-scope `/`, plus xen-orchestra's empty-body fallback
     assert paths.count("/") == 3
@@ -314,6 +325,9 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "wp-json/mwai" not in blob.lower()
     assert all("mcp" not in path.lower() for path in paths)
     assert "ai-engine" not in blob.lower()
+    assert "bricksforge" not in blob.lower()
+    assert "temporaryfileuploads" not in blob.lower()
+    assert "wp-json/bricksforge" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2567,13 +2581,15 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "btcpay-server"
+    assert ids[-1] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
+        "btcpay-server",
     ):
         assert required in ids
-    assert ids[-2] == "masteriyo-lms"
+    assert ids[-2] == "btcpay-server"
     assert BTCPAY.agent == "secrets"
+    assert BRICKSFORGE.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -6091,3 +6107,296 @@ def test_ai_engine_check_source_is_get_only_static_fingerprint():
     assert AI_ENGINE.cve == "CVE-2026-123478"
     assert AI_ENGINE.id == "ai-engine"
     assert "3.9.2" in AI_ENGINE.fixed
+
+# --- Bricksforge (CVE-2026-85097) ----------------------------------------
+
+BF_README = "/wp-content/plugins/bricksforge/readme.txt"
+BF_CHANGELOG = "/wp-content/plugins/bricksforge/changelog.txt"
+_BF_WP_ROOT = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="https://api.w.org/" href="http://127.0.0.1:8081/wp-json/" />'
+)
+_BF_BANNED = (
+    "wp-json/bricksforge",
+    "/wp-json/bricksforge/v1/form_submit",
+    "bricksforge_regenerate_nonce",
+    "bricksforge_form_submit",
+    "temporaryFileUploads",
+    "/wp-content/uploads/bricksforge/tmp/",
+    "bricksforge/tmp",
+    "admin-ajax.php",
+    "admin-ajax",
+    "/wp-admin",
+)
+
+
+def _bf_asset_html(version: str | None = None) -> str:
+    if version is None:
+        return (
+            f"{_BF_WP_ROOT}"
+            '<script src="/wp-content/plugins/bricksforge/assets/js/app.js">'
+            "</script>"
+            '<link rel="stylesheet" href="/wp-content/plugins/bricksforge/'
+            'assets/css/app.css" />'
+        )
+    return (
+        f"{_BF_WP_ROOT}"
+        f'<script src="/wp-content/plugins/bricksforge/assets/js/app.js'
+        f'?ver={version}"></script>'
+        f'<link rel="stylesheet" href="/wp-content/plugins/bricksforge/'
+        f'assets/css/app.css?ver={version}" />'
+    )
+
+
+def _bf_readme(stable: str | None) -> str:
+    lines = [
+        "=== Bricksforge ===",
+        "Contributors: bricksforge",
+        "Requires at least: 5.0",
+        "Tested up to: 6.8",
+    ]
+    if stable is not None:
+        lines.append(f"Stable tag: {stable}")
+    lines.extend(
+        [
+            "",
+            "Bricksforge – One Plugin. Countless Possibilities.",
+            "",
+            "== Changelog ==",
+            "",
+        ]
+    )
+    if stable is not None:
+        lines.extend([f"= {stable} =", "", "* Security release notes"])
+    return "\n".join(lines) + "\n"
+
+
+def _bf_changelog(version: str) -> str:
+    return (
+        f"### {version}\n"
+        "\n"
+        "Bricksforge security and maintenance release.\n"
+        "- Hardened Pro Forms temporary upload handling.\n"
+    )
+
+
+def _assert_bf_passive(transport, max_gets=2):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths)
+    for banned in _BF_BANNED:
+        assert banned.lower() not in blob.lower()
+    assert len(paths) <= max_gets
+    for path in paths:
+        assert path in (BF_README, BF_CHANGELOG)
+    assert paths.count(BF_README) <= 1
+    assert paths.count(BF_CHANGELOG) <= 1
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("3.1.8.9", True), ("3.1.8.8", True), ("3.1.0", True), ("2.0.0", True),
+    ("3.1.8.10", False), ("4.0.0", False), ("4.0.1", False), ("4.1.0", False),
+])
+def test_bricksforge_version_matrix(version, vulnerable):
+    from agents.cve_checks.bricksforge import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_bricksforge_no_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[BF_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _bf_readme("3.1.8.9"),
+    }
+    _install(monkeypatch, transport)
+    assert BRICKSFORGE.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_bricksforge_readme_3189_is_critical_and_passive(monkeypatch):
+    transport = Transport()
+    transport.routes[BF_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _bf_readme("3.1.8.9"),
+    }
+    _install(monkeypatch, transport)
+    found = BRICKSFORGE.run({}, _ctx(body=_BF_WP_ROOT))
+    _assert_bf_passive(transport, max_gets=1)
+    assert [call[1] for call in transport.calls] == [BF_README]
+    assert BRICKSFORGE.agent == "misconfig"
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "bricksforge:3.1.8.9"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-85097" in found[0]["title"]
+    assert "CVE-2026-85097" in found[0]["evidence"]
+    assert "4.0.1" in found[0]["fix"]
+    assert "3.1.8.10" in found[0]["fix"]
+    assert "bricksforge/tmp" in found[0]["fix"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+@pytest.mark.parametrize("tag", ["3.1.8.10", "4.0.1"])
+def test_bricksforge_fixed_versions_are_not_flagged(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[BF_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _bf_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    assert BRICKSFORGE.run({}, _ctx(body=_BF_WP_ROOT)) == []
+    _assert_bf_passive(transport, max_gets=1)
+
+
+def test_bricksforge_asset_ver_3189_is_critical_without_request(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = BRICKSFORGE.run({}, _ctx(body=_bf_asset_html("3.1.8.9")))
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "bricksforge:3.1.8.9"
+    assert UNCONFIRMED in found[0]["title"]
+
+
+def test_bricksforge_asset_ver_401_is_none(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert BRICKSFORGE.run({}, _ctx(body=_bf_asset_html("4.0.1"))) == []
+    assert transport.calls == []
+
+
+def test_bricksforge_404_has_no_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[BF_README] = {"status": 404, "body": ""}
+    transport.routes[BF_CHANGELOG] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    found = BRICKSFORGE.run({}, _ctx(body=_BF_WP_ROOT))
+    _assert_bf_passive(transport, max_gets=2)
+    assert [call[1] for call in transport.calls] == [BF_README, BF_CHANGELOG]
+    assert found == []
+
+
+def test_bricksforge_present_unknown_version_is_low_confidence_info(monkeypatch):
+    transport = Transport()
+    transport.routes[BF_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _bf_readme(None),
+    }
+    transport.routes[BF_CHANGELOG] = {"status": 404, "body": ""}
+    _install(monkeypatch, transport)
+    found = BRICKSFORGE.run({}, _ctx(body=_bf_asset_html(None)))
+    _assert_bf_passive(transport, max_gets=2)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["confidence"] == "low"
+    assert found[0]["check"]["match"] == "bricksforge:unknown"
+    assert "low confidence" in found[0]["title"].lower()
+    assert "CVE-2026-85097" in found[0]["title"]
+
+
+def test_bricksforge_request_budget_at_most_two_gets_and_audited(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        path = urlparse(req.full_url).path
+        if path.endswith("readme.txt"):
+            body = b"not a bricksforge readme"
+        else:
+            body = _bf_changelog("3.1.8.9").encode()
+        return _Resp(body=body, headers=[("content-type", "text/plain")])
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_bricksforge_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = BRICKSFORGE.run({}, _ctx(body=_BF_WP_ROOT))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 2
+    assert seen["methods"] == ["GET", "GET"]
+    assert seen["data"] == [None, None]
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "bricksforge:3.1.8.9"
+    import audit
+    rows = [
+        row for row in audit.recent(20)
+        if row["kind"] == "request" and row.get("run_id") == "run_bricksforge_audit"
+    ]
+    assert len(rows) == 2
+    assert {row["action"] for row in rows} == {"GET"}
+    assert {row["agent"] for row in rows} == {"misconfig"}
+    urls = " ".join(row["url"] for row in rows)
+    assert BF_README in urls
+    assert BF_CHANGELOG in urls
+    assert all("body" not in row for row in rows)
+    blob = urls.lower()
+    for banned in _BF_BANNED:
+        assert banned.lower() not in blob
+
+
+def test_bricksforge_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_bricksforge_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                BRICKSFORGE.run({}, _ctx(body=_BF_WP_ROOT))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_bricksforge_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://bricksforge.attacker.example/wp-content/plugins/bricksforge/"
+            "readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_bricksforge_check_source_is_get_only_static_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "bricksforge.py"
+    ).read_text(encoding="utf-8")
+    assert 'README = "/wp-content/plugins/bricksforge/readme.txt"' in text
+    assert 'CHANGELOG = "/wp-content/plugins/bricksforge/changelog.txt"' in text
+    assert "fetch_path(ctx, path" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "looks_like_wordpress" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "temporaryFileUploads" in text
+    assert "form_submit" in text
+    assert "bricksforge_regenerate_nonce" in text
+    assert BRICKSFORGE.agent == "misconfig"
+    assert BRICKSFORGE.cve == "CVE-2026-85097"
+    assert BRICKSFORGE.id == "bricksforge"
+    assert "3.1.8.10" in BRICKSFORGE.fixed
+    assert "4.0.1" in BRICKSFORGE.fixed
