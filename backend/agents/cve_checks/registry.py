@@ -14,6 +14,7 @@ from . import (
     contact_form_7,
     craft_cms,
     dependency_files,
+    estatik,
     gpustack_auth,
     gravity_forms,
     gravity_forms_chunked,
@@ -83,6 +84,7 @@ CHECKS: tuple[CveCheck, ...] = (
     btcpay.CHECK,
     bricksforge.CHECK,
     automatorwp_webhooks.CHECK,
+    estatik.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
