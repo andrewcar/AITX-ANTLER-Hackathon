@@ -32,6 +32,7 @@ from . import (
     registration_form_woocommerce,
     slicewp,
     supabase_storage,
+    ultra_addons_cf7,
     vite_dev_server,
     wedevs,
     wordpress,
@@ -85,6 +86,7 @@ CHECKS: tuple[CveCheck, ...] = (
     bricksforge.CHECK,
     automatorwp_webhooks.CHECK,
     estatik.CHECK,
+    ultra_addons_cf7.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
