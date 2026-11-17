@@ -11,6 +11,7 @@ from . import (
     bricksforge,
     btcpay,
     commerce_core,
+    confluence_axis,
     contact_form_7,
     craft_cms,
     dependency_files,
@@ -87,6 +88,7 @@ CHECKS: tuple[CveCheck, ...] = (
     automatorwp_webhooks.CHECK,
     estatik.CHECK,
     ultra_addons_cf7.CHECK,
+    confluence_axis.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
