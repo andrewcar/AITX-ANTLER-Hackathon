@@ -53,6 +53,7 @@ from agents.cve_checks.yootheme import CHECK as YOOTHEME
 from agents.cve_checks.btcpay import CHECK as BTCPAY
 from agents.cve_checks.bricksforge import CHECK as BRICKSFORGE
 from agents.cve_checks.automatorwp_webhooks import CHECK as AUTOMATORWP_WEBHOOKS
+from agents.cve_checks.ultra_addons_cf7 import CHECK as ULTRA_ADDONS_CF7
 import planner
 import main
 import orchestrator
@@ -129,6 +130,16 @@ BANNED = (
     "/wp-admin",
     "user_id=",
     "password=",
+    "wp-json/contact-form-7",
+    "/wp-json/contact-form-7/",
+    "contact-form-7/v1",
+    "wpcf7",
+    "../",
+    "..%2f",
+    "wp-config.php",
+    "uacf7_wpcf7_mail_components",
+    "/pdf",
+    ".pdf",
 )
 
 
@@ -342,6 +353,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/automatorwp-pro-webhooks/readme.txt") == 0
     assert "automatorwp" not in blob.lower()
     assert "/wp-json/automatorwp" not in blob.lower()
+    # Ultra Addons for CF7 only probes readme when WordPress + plugin path are present.
+    assert paths.count(
+        "/wp-content/plugins/ultimate-addons-for-contact-form-7/readme.txt"
+    ) == 0
+    assert "ultimate-addons-for-contact-form-7" not in blob.lower()
+    assert "wp-json/contact-form-7" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2595,17 +2612,19 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "automatorwp-webhooks"
-    assert ids[-2] == "bricksforge"
+    assert ids[-1] == "ultra-addons-cf7"
+    assert ids[-2] == "automatorwp-webhooks"
+    assert ids[-3] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
-        "btcpay-server", "bricksforge", "automatorwp-webhooks",
+        "btcpay-server", "bricksforge", "automatorwp-webhooks", "ultra-addons-cf7",
     ):
         assert required in ids
-    assert ids[-3] == "btcpay-server"
+    assert ids[-4] == "btcpay-server"
     assert BTCPAY.agent == "secrets"
     assert BRICKSFORGE.agent == "misconfig"
     assert AUTOMATORWP_WEBHOOKS.agent == "auth"
+    assert ULTRA_ADDONS_CF7.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -6739,3 +6758,339 @@ def test_automatorwp_webhooks_check_source_is_get_only_passive():
     assert AUTOMATORWP_WEBHOOKS.cve == "CVE-2026-126173"
     assert AUTOMATORWP_WEBHOOKS.id == "automatorwp-webhooks"
     assert "1.4.5" in AUTOMATORWP_WEBHOOKS.fixed
+
+
+# --- Ultra Addons for CF7 (CVE-2026-100386 / CVE-2026-102435) ---------------
+
+UACF7_README = (
+    "/wp-content/plugins/ultimate-addons-for-contact-form-7/readme.txt"
+)
+_UACF7_WP_ROOT = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="https://api.w.org/" href="http://127.0.0.1:8081/wp-json/" />'
+)
+_UACF7_BANNED = (
+    "wp-json/contact-form-7",
+    "/wp-json/contact-form-7/",
+    "contact-form-7/v1",
+    "wpcf7",
+    "admin-ajax",
+    "/wp-admin",
+    "../",
+    "..%2f",
+    "wp-config.php",
+    "uacf7_wpcf7_mail_components",
+    "/pdf",
+    ".pdf",
+)
+
+
+def _uacf7_asset_html(version: str | None = None) -> str:
+    if version is None:
+        return (
+            f"{_UACF7_WP_ROOT}"
+            '<script src="/wp-content/plugins/ultimate-addons-for-contact-form-7/'
+            'assets/js/uacf7-frontend.js"></script>'
+            '<link rel="stylesheet" href="/wp-content/plugins/'
+            'ultimate-addons-for-contact-form-7/assets/css/uacf7-frontend.css" />'
+        )
+    return (
+        f"{_UACF7_WP_ROOT}"
+        f'<script src="/wp-content/plugins/ultimate-addons-for-contact-form-7/'
+        f'assets/js/uacf7-frontend.js?ver={version}"></script>'
+        f'<link rel="stylesheet" href="/wp-content/plugins/'
+        f'ultimate-addons-for-contact-form-7/assets/css/'
+        f'uacf7-frontend.css?ver={version}" />'
+    )
+
+
+def _uacf7_readme(stable: str) -> str:
+    return (
+        "=== Ultra Addons for Contact Form 7 ===\n"
+        f"Stable tag: {stable}\n"
+        "Contributors: themefic, hasanet, mdashikul\n"
+        "Requires at least: 5.4\n\n"
+        "Ultra Addons for Contact Form 7 — PDF Generator and more.\n"
+    )
+
+
+def _assert_uacf7_passive(transport):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths).lower()
+    for banned in _UACF7_BANNED:
+        assert banned.lower() not in blob
+    for path in paths:
+        assert path == UACF7_README
+    assert paths.count(UACF7_README) <= 1
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("3.5.54", True), ("3.5.53", True), ("3.5.0", True), ("3.0.0", True),
+    ("3.5.55", False), ("3.5.56", False), ("3.5.57", False), ("3.6.0", False),
+])
+def test_ultra_addons_cf7_version_matrix(version, vulnerable):
+    from agents.cve_checks.ultra_addons_cf7 import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_ultra_addons_cf7_no_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[UACF7_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _uacf7_readme("3.5.54"),
+    }
+    _install(monkeypatch, transport)
+    assert ULTRA_ADDONS_CF7.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_ultra_addons_cf7_wordpress_without_plugin_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[UACF7_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _uacf7_readme("3.5.54"),
+    }
+    transport.routes["/wp-json/contact-form-7/v1/contact-forms"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    assert ULTRA_ADDONS_CF7.run({}, _ctx(body=_UACF7_WP_ROOT)) == []
+    assert transport.calls == []
+
+
+def test_ultra_addons_cf7_asset_ver_3554_is_high_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html("3.5.54")))
+    assert transport.calls == []
+    assert ULTRA_ADDONS_CF7.agent == "misconfig"
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "ultra-addons-cf7:3.5.54"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-100386" in found[0]["title"]
+    assert "CVE-2026-102435" in found[0]["title"]
+    assert "CVE-2026-100386" in found[0]["evidence"]
+    assert "CVE-2026-102435" in found[0]["evidence"]
+    assert "PDF Generator" in found[0]["evidence"]
+    assert "CVSS 7.5" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "3.5.55" in found[0]["fix"]
+    assert "3.5.57" in found[0]["fix"]
+    assert "salt" in found[0]["fix"].lower()
+    assert "wordfence.com" in found[0]["evidence"]
+    assert "laskyr.com" in found[0]["evidence"]
+    assert "nvd.nist.gov" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+def test_ultra_addons_cf7_3555_is_not_flagged(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html("3.5.55"))) == []
+    assert transport.calls == []
+
+
+def test_ultra_addons_cf7_plugin_present_no_version_one_get_then_info(monkeypatch):
+    transport = Transport()
+    transport.routes[UACF7_README] = {
+        "status": 404,
+        "content_type": "text/plain",
+        "body": "missing",
+    }
+    _install(monkeypatch, transport)
+    found = ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html(None)))
+    _assert_uacf7_passive(transport)
+    assert [call[1] for call in transport.calls] == [UACF7_README]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "ultra-addons-cf7:unknown"
+
+
+def test_ultra_addons_cf7_readme_fallback_3554_is_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[UACF7_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _uacf7_readme("3.5.54"),
+    }
+    _install(monkeypatch, transport)
+    found = ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html(None)))
+    _assert_uacf7_passive(transport)
+    assert [call[1] for call in transport.calls] == [UACF7_README]
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "ultra-addons-cf7:3.5.54"
+    assert "CVE-2026-100386" in found[0]["evidence"]
+    assert "CVE-2026-102435" in found[0]["evidence"]
+
+
+def test_ultra_addons_cf7_readme_fallback_3555_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[UACF7_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _uacf7_readme("3.5.55"),
+    }
+    _install(monkeypatch, transport)
+    assert ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html(None))) == []
+    _assert_uacf7_passive(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "<!doctype html><html><head><title>Ultra</title></head>"
+    "<body>Stable tag: 3.5.54</body></html>",
+    "<html><body><p>Ultra Addons Stable tag: 3.5.54</p></body></html>",
+    "=== Some Other Plugin ===\nContributors: someone\nStable tag: 3.5.54\n",
+    "Ultra Addons is mentioned here.\nStable tag: 3.5.54\n",
+])
+def test_ultra_addons_cf7_soft404_or_wrong_readme_is_none(monkeypatch, body):
+    transport = Transport()
+    transport.routes[UACF7_README] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html(None)))
+    _assert_uacf7_passive(transport)
+    assert [call[1] for call in transport.calls] == [UACF7_README]
+    assert all(
+        item["check"]["match"] != "ultra-addons-cf7:3.5.54" for item in found
+    )
+    assert all(item["severity"] != "high" for item in found)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "ultra-addons-cf7:unknown"
+
+
+def test_ultra_addons_cf7_at_most_one_readme_get_and_never_cf7_ajax(
+    monkeypatch,
+):
+    transport = Transport()
+    transport.routes[UACF7_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _uacf7_readme("3.5.54"),
+    }
+    transport.routes["/wp-json/contact-form-7/v1/contact-forms/1/feedback"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-content/uploads/uacf7-pdf/report.pdf"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html(None)))
+    _assert_uacf7_passive(transport)
+    assert [call[1] for call in transport.calls] == [UACF7_README]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "high"
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    for banned in _UACF7_BANNED:
+        assert banned.lower() not in blob
+
+
+def test_ultra_addons_cf7_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/",
+        actor="tester",
+        run_id="run_uacf7_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_ultra_addons_cf7_requests_are_get_audited_and_have_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_uacf7_readme("3.5.54").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/",
+        actor="tester",
+        run_id="run_uacf7_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = ULTRA_ADDONS_CF7.run({}, _ctx(body=_uacf7_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "high"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert UACF7_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "wp-json/contact-form-7" not in rows[-1]["url"].lower()
+    assert "admin-ajax" not in rows[-1]["url"].lower()
+    assert ".pdf" not in rows[-1]["url"].lower()
+
+
+def test_ultra_addons_cf7_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://uacf7.attacker.example/wp-content/plugins/"
+            "ultimate-addons-for-contact-form-7/readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_ultra_addons_cf7_check_source_is_get_only_static_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "ultra_addons_cf7.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        'README = "/wp-content/plugins/ultimate-addons-for-contact-form-7/'
+        'readme.txt"'
+    ) in text
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "looks_like_wordpress" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "/wp-json/contact-form-7/" in text
+    assert "admin-ajax" in text
+    assert "path" in text.lower()
+    assert ULTRA_ADDONS_CF7.agent == "misconfig"
+    assert ULTRA_ADDONS_CF7.cve == "CVE-2026-100386 / CVE-2026-102435"
+    assert ULTRA_ADDONS_CF7.id == "ultra-addons-cf7"
+    assert "3.5.55" in ULTRA_ADDONS_CF7.fixed
+    assert "3.5.57" in ULTRA_ADDONS_CF7.fixed
