@@ -3,16 +3,19 @@
 Meow Apps AI Engine – MCP Server & AI Chatbot (WordPress.org slug ``ai-engine``)
 through 3.9.1 has an unauthenticated stored XSS that can hijack administrator
 sessions. Fixed in 3.9.2. CVSS 7.1. VulnCheck observed exploitation before
-CISA listing.
+CISA listing. The 3.9.2 fix was incomplete for a related upload XSS; that
+follow-on (CVE-2026-125804, fixed in 3.9.4) lives in the sibling
+``ai_engine_upload`` check and shares this module's version read.
 
 Detection is passive only: confirm WordPress from the already-fetched root
 response, parse crawled HTML for ``/wp-content/plugins/ai-engine/`` asset URLs
 with ``?ver=``, and when the plugin path is present without a version, at most
-one GET of the plugin ``readme.txt`` Stable tag.
+one GET of the plugin ``readme.txt`` Stable tag. That single readme GET is
+shared with the sibling upload-XSS check via a per-scan cache on the context.
 
-Never sends chatbot messages, never calls ``/wp-json/mwai/`` or MCP endpoints,
-never submits HTML or script content, and never POSTs, uploads, or touches
-``/wp-admin``.
+Never sends chatbot messages, never calls ``/wp-json/mwai/``, ``/mwai-ui/``,
+or MCP endpoints, never submits HTML or script content, and never POSTs,
+uploads, or touches ``/wp-admin``.
 """
 import re
 
@@ -26,6 +29,7 @@ from .versions import cmp_ver, fmt, parse_dotted
 README = "/wp-content/plugins/ai-engine/readme.txt"
 _AFFECTED_THROUGH = (3, 9, 1)
 _FIXED = (3, 9, 2)
+_README_CACHE = "_ai_engine_readme"
 
 _SOURCES = (
     "https://wordsec.net/vulnerabilities/plugins/ai-engine/"
@@ -114,7 +118,7 @@ def is_plugin_readme(body: str) -> bool:
 
 
 def affected(version: tuple[int, ...]) -> bool:
-    """True for versions through 3.9.1 inclusive. 3.9.2+ is patched."""
+    """True for versions through 3.9.1 inclusive. 3.9.2+ is patched for this CVE."""
     return cmp_ver(version, _AFFECTED_THROUGH) <= 0
 
 
@@ -145,8 +149,9 @@ def observe_html(body: str) -> tuple[tuple[int, ...] | None, str, bool]:
 def _passive_note() -> str:
     return (
         "Only a read-only GET of the public plugin readme.txt was sent when "
-        "needed; no chatbot message, /wp-json/mwai/ or MCP endpoint call, HTML "
-        "or script submission, POST, form submission, upload, write, or "
+        "needed (shared with the sibling upload-XSS check); no chatbot "
+        "message, /wp-json/mwai/, /mwai-ui/, or MCP endpoint call, HTML or "
+        "script submission, POST, form submission, upload, write, or "
         "/wp-admin request was sent."
     )
 
@@ -186,23 +191,41 @@ def _info(where: str) -> dict:
 
 
 def _readme_version(ctx) -> tuple[tuple[int, ...] | None, str, bool]:
-    """At most one GET of the plugin readme. Returns ``(version, where, is_plugin)``."""
+    """At most one GET of the plugin readme per scan. Shared with sibling checks."""
+    cached = getattr(ctx, _README_CACHE, None)
+    if cached is not None:
+        return cached
     readme = fetch_path(ctx, README, max_bytes=65536)
     if readme.get("status") != 200:
-        return None, "", False
+        result = (None, "", False)
+        setattr(ctx, _README_CACHE, result)
+        return result
     body = readme.get("body") or ""
     if not is_plugin_readme(body):
-        return None, "", False
+        result = (None, "", False)
+        setattr(ctx, _README_CACHE, result)
+        return result
     version = stable_tag(body)
     if version is not None:
-        return version, f"GET {README} Stable tag", True
-    return None, f"GET {README}", True
+        result = (version, f"GET {README} Stable tag", True)
+    else:
+        result = (None, f"GET {README}", True)
+    setattr(ctx, _README_CACHE, result)
+    return result
 
 
-def run(section, ctx) -> list[dict]:
+def resolve_plugin_version(
+    ctx,
+) -> tuple[tuple[int, ...] | None, str, bool]:
+    """WordPress + asset ``?ver=``, else at most one shared readme.txt GET.
+
+    Returns ``(version, where, seen)``. ``seen`` is True when an ai-engine
+    plugin path was already present in crawled HTML (or the readme proved
+    the plugin is installed). Non-WordPress roots return ``(None, "", False)``.
+    """
     headers, body = root_observation(ctx)
     if not looks_like_wordpress(headers, body):
-        return []
+        return None, "", False
 
     version, where, seen = observe_html(body)
 
@@ -213,6 +236,12 @@ def run(section, ctx) -> list[dict]:
         if is_plugin:
             where = readme_where
             version = readme_version
+
+    return version, where, seen
+
+
+def run(section, ctx) -> list[dict]:
+    version, where, seen = resolve_plugin_version(ctx)
 
     if version is not None:
         if affected(version):
@@ -238,23 +267,25 @@ CHECK = CveCheck(
         "Confirm WordPress from the already-fetched root response, then read "
         "the AI Engine version from a plugin asset ?ver= already in the page, "
         "or when the plugin path is present without a version, one GET of "
-        "/wp-content/plugins/ai-engine/readme.txt Stable tag. High for "
-        "versions through 3.9.1 (fixed in 3.9.2; CVSS 7.1). Info when the "
-        "plugin is present but the version is hidden. Non-WordPress targets "
-        "and pages without an ai-engine asset yield no request."
+        "/wp-content/plugins/ai-engine/readme.txt Stable tag (shared with the "
+        "sibling CVE-2026-125804 check). High for versions through 3.9.1 "
+        "(fixed in 3.9.2; CVSS 7.1). Info when the plugin is present but the "
+        "version is hidden. Non-WordPress targets and pages without an "
+        "ai-engine asset yield no request."
     ),
     sends=(
         "No request when the root response does not look like WordPress, or "
         "when crawled HTML already shows an ai-engine asset ?ver=. When "
         "WordPress is indicated and the plugin path is present without a "
-        "version, one GET of /wp-content/plugins/ai-engine/readme.txt. No "
-        "request when the plugin is absent from crawled HTML."
+        "version, one GET of /wp-content/plugins/ai-engine/readme.txt (at "
+        "most once per scan, shared with ai-engine-upload). No request when "
+        "the plugin is absent from crawled HTML."
     ),
     does_not_send=(
-        "Never sends chatbot messages. Never calls /wp-json/mwai/ or MCP "
-        "endpoints. Never submits HTML or script content. No POSTs or form "
-        "submissions, no uploads, no writes, and nothing to /wp-admin. Never "
-        "more than the single readme GET."
+        "Never sends chatbot messages. Never calls /wp-json/mwai/, /mwai-ui/, "
+        "or MCP endpoints. Never submits HTML or script content. No POSTs or "
+        "form submissions, no uploads, no writes, and nothing to /wp-admin. "
+        "Never more than the single shared readme GET."
     ),
     run=run,
 )
