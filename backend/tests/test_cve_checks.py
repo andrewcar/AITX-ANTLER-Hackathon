@@ -53,6 +53,7 @@ from agents.cve_checks.yootheme import CHECK as YOOTHEME
 from agents.cve_checks.btcpay import CHECK as BTCPAY
 from agents.cve_checks.bricksforge import CHECK as BRICKSFORGE
 from agents.cve_checks.automatorwp_webhooks import CHECK as AUTOMATORWP_WEBHOOKS
+from agents.cve_checks.estatik import CHECK as ESTATIK
 import planner
 import main
 import orchestrator
@@ -129,6 +130,12 @@ BANNED = (
     "/wp-admin",
     "user_id=",
     "password=",
+    "listing-search",
+    "template=",
+    "path=",
+    "../",
+    "%2e%2e",
+    "%2E%2E",
 )
 
 
@@ -342,6 +349,10 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/automatorwp-pro-webhooks/readme.txt") == 0
     assert "automatorwp" not in blob.lower()
     assert "/wp-json/automatorwp" not in blob.lower()
+    # Estatik only probes readme when WordPress + plugin path are present.
+    assert paths.count("/wp-content/plugins/estatik/readme.txt") == 0
+    assert "estatik" not in blob.lower()
+    assert "listing-search" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2595,17 +2606,19 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "automatorwp-webhooks"
-    assert ids[-2] == "bricksforge"
+    assert ids[-1] == "estatik"
+    assert ids[-2] == "automatorwp-webhooks"
+    assert ids[-3] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
-        "btcpay-server", "bricksforge", "automatorwp-webhooks",
+        "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
     ):
         assert required in ids
-    assert ids[-3] == "btcpay-server"
+    assert ids[-4] == "btcpay-server"
     assert BTCPAY.agent == "secrets"
     assert BRICKSFORGE.agent == "misconfig"
     assert AUTOMATORWP_WEBHOOKS.agent == "auth"
+    assert ESTATIK.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -6739,3 +6752,323 @@ def test_automatorwp_webhooks_check_source_is_get_only_passive():
     assert AUTOMATORWP_WEBHOOKS.cve == "CVE-2026-126173"
     assert AUTOMATORWP_WEBHOOKS.id == "automatorwp-webhooks"
     assert "1.4.5" in AUTOMATORWP_WEBHOOKS.fixed
+
+
+# --- Estatik (CVE-2026-125795) ---------------------------------------------
+
+ESTATIK_README = "/wp-content/plugins/estatik/readme.txt"
+_ESTATIK_WP_ROOT = (
+    '<meta name="generator" content="WordPress 6.8.1" />'
+    '<link rel="https://api.w.org/" href="http://127.0.0.1:8081/wp-json/" />'
+)
+_ESTATIK_BANNED = (
+    "listing-search",
+    "admin-ajax.php",
+    "admin-ajax",
+    "template=",
+    "path=",
+    "../",
+    "%2e%2e",
+    "%2E%2E",
+    "/wp-admin",
+)
+
+
+def _estatik_asset_html(version: str | None = None) -> str:
+    if version is None:
+        return (
+            f"{_ESTATIK_WP_ROOT}"
+            '<script src="/wp-content/plugins/estatik/assets/js/public.js">'
+            "</script>"
+            '<link rel="stylesheet" href="/wp-content/plugins/estatik/'
+            'assets/css/public.css" />'
+        )
+    return (
+        f"{_ESTATIK_WP_ROOT}"
+        f'<script src="/wp-content/plugins/estatik/assets/js/public.js'
+        f'?ver={version}"></script>'
+        f'<link rel="stylesheet" href="/wp-content/plugins/estatik/'
+        f'assets/css/public.css?ver={version}" />'
+    )
+
+
+def _estatik_readme(stable: str) -> str:
+    return (
+        "=== Estatik ===\n"
+        f"Stable tag: {stable}\n"
+        "Contributors: estatik\n"
+        "Requires at least: 5.0\n\n"
+        "Estatik real estate plugin for WordPress.\n"
+    )
+
+
+def _assert_estatik_passive(transport):
+    assert {call[0] for call in transport.calls} <= {"GET"}
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths)
+    for banned in _ESTATIK_BANNED:
+        assert banned.lower() not in blob.lower()
+    for path in paths:
+        assert path == ESTATIK_README
+        assert "listing-search" not in path.lower()
+        assert "admin-ajax" not in path.lower()
+        assert "template=" not in path.lower()
+        assert ".." not in path
+    assert paths.count(ESTATIK_README) <= 1
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("4.3.6", True), ("4.3.5", True), ("4.2.0", True), ("4.0.0", True),
+    ("4.3.7", False), ("4.3.8", False), ("4.4.0", False), ("5.0.0", False),
+])
+def test_estatik_version_matrix(version, vulnerable):
+    from agents.cve_checks.estatik import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
+def test_estatik_no_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[ESTATIK_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _estatik_readme("4.3.6"),
+    }
+    _install(monkeypatch, transport)
+    assert ESTATIK.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_estatik_wordpress_without_plugin_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[ESTATIK_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _estatik_readme("4.3.6"),
+    }
+    transport.routes["/listing-search"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    assert ESTATIK.run({}, _ctx(body=_ESTATIK_WP_ROOT)) == []
+    assert transport.calls == []
+
+
+def test_estatik_asset_ver_436_is_critical_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = ESTATIK.run({}, _ctx(body=_estatik_asset_html("4.3.6")))
+    assert transport.calls == []
+    assert ESTATIK.agent == "misconfig"
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "estatik:4.3.6"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-125795" in found[0]["title"]
+    assert "CVE-2026-125795" in found[0]["evidence"]
+    assert "4.3.7" in found[0]["fix"]
+    assert "CVSS 9.8" in found[0]["evidence"]
+    assert "CWE-98" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "local file inclusion" in found[0]["evidence"].lower()
+    assert "GHSA-3cfv-f88w-c563" in found[0]["evidence"]
+    assert "patchstack.com" in found[0]["evidence"]
+    assert "laskyr.com" in found[0]["evidence"]
+    assert "openadvisories.org" in found[0]["evidence"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+def test_estatik_437_is_not_flagged(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    assert ESTATIK.run({}, _ctx(body=_estatik_asset_html("4.3.7"))) == []
+    assert transport.calls == []
+
+
+def test_estatik_plugin_present_no_version_one_get_then_info(monkeypatch):
+    transport = Transport()
+    transport.routes[ESTATIK_README] = {
+        "status": 404,
+        "content_type": "text/plain",
+        "body": "missing",
+    }
+    _install(monkeypatch, transport)
+    found = ESTATIK.run({}, _ctx(body=_estatik_asset_html(None)))
+    _assert_estatik_passive(transport)
+    assert [call[1] for call in transport.calls] == [ESTATIK_README]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "estatik:unknown"
+    assert "CVE-2026-125795" in found[0]["title"]
+
+
+def test_estatik_readme_fallback_436_is_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[ESTATIK_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _estatik_readme("4.3.6"),
+    }
+    _install(monkeypatch, transport)
+    found = ESTATIK.run({}, _ctx(body=_estatik_asset_html(None)))
+    _assert_estatik_passive(transport)
+    assert [call[1] for call in transport.calls] == [ESTATIK_README]
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "estatik:4.3.6"
+    assert "CVE-2026-125795" in found[0]["evidence"]
+    assert "4.3.7" in found[0]["fix"]
+
+
+def test_estatik_readme_fallback_437_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[ESTATIK_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _estatik_readme("4.3.7"),
+    }
+    _install(monkeypatch, transport)
+    assert ESTATIK.run({}, _ctx(body=_estatik_asset_html(None))) == []
+    _assert_estatik_passive(transport)
+
+
+def test_estatik_soft_404_readme_is_ignored(monkeypatch):
+    transport = Transport()
+    transport.routes[ESTATIK_README] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": (
+            "<!DOCTYPE html><html><head><title>Not Found</title></head>"
+            "<body><h1>404</h1><p>Estatik Stable tag: 4.3.6</p></body></html>"
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = ESTATIK.run({}, _ctx(body=_estatik_asset_html(None)))
+    _assert_estatik_passive(transport)
+    assert [call[1] for call in transport.calls] == [ESTATIK_README]
+    assert all(item["check"]["match"] != "estatik:4.3.6" for item in found)
+    assert all(item["severity"] != "critical" for item in found)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "estatik:unknown"
+
+
+def test_estatik_at_most_one_readme_get_and_never_listing_search(monkeypatch):
+    transport = Transport()
+    transport.routes[ESTATIK_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _estatik_readme("4.3.6"),
+    }
+    transport.routes["/listing-search"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/wp-admin/admin-ajax.php"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/?template=../../etc/passwd"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    found = ESTATIK.run({}, _ctx(body=_estatik_asset_html(None)))
+    _assert_estatik_passive(transport)
+    assert [call[1] for call in transport.calls] == [ESTATIK_README]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "listing-search" not in blob
+    assert "admin-ajax" not in blob
+    assert "template=" not in blob
+    assert ".." not in blob
+    assert "path=" not in blob
+
+
+def test_estatik_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_estatik_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                ESTATIK.run({}, _ctx(body=_estatik_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_estatik_requests_are_get_audited_and_have_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_estatik_readme("4.3.6").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_estatik_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = ESTATIK.run({}, _ctx(body=_estatik_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert ESTATIK_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "listing-search" not in rows[-1]["url"].lower()
+    assert "admin-ajax" not in rows[-1]["url"].lower()
+    assert "template=" not in rows[-1]["url"].lower()
+
+
+def test_estatik_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://estatik.attacker.example/wp-content/plugins/estatik/"
+            "readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_estatik_check_source_is_get_only_static_fingerprint():
+    text = (
+        ROOT / "agents" / "cve_checks" / "estatik.py"
+    ).read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "looks_like_wordpress" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "listing-search" in text.lower()
+    assert "template" in text.lower()
+    assert "Never calls listing-search" in text or "never calls listing-search" in text.lower()
+    assert ESTATIK.agent == "misconfig"
+    assert ESTATIK.cve == "CVE-2026-125795"
+    assert ESTATIK.id == "estatik"
+    assert "4.3.7" in ESTATIK.fixed
