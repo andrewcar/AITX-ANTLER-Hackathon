@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (675 test functions).
+- **Tests:** `pytest` (700 test functions).
 
 ## Architecture
 
@@ -108,6 +108,7 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | `bricksforge` (misconfig) | CVE-2026-85097 | Confirm WordPress from the already-fetched root response, then plugin asset `?ver=` already in the page HTML. When the version is still unknown, at most two GETs of `/wp-content/plugins/bricksforge/readme.txt` and `/wp-content/plugins/bricksforge/changelog.txt`. Critical, version unconfirmed, for Bricksforge through 3.1.8.9 (fixed in 3.1.8.10, also 4.0.0+; 4.0.1 recommended for related Pro Forms upload hardening). Patchstack CVSS 10 / CNA CVSS 9.8; known-exploited (Patchstack telemetry since 7 October 2026; not CISA KEV). Info/low confidence when the plugin is present but the version is hidden. Non-WordPress targets yield no request. | Never POSTs to `/wp-json/bricksforge/v1/form_submit`. Never calls `admin-ajax` (`bricksforge_regenerate_nonce`, `bricksforge_form_submit`). Never sends nonce requests, `temporaryFileUploads` parameters, uploads, polyglot files, requests to `/wp-content/uploads/bricksforge/tmp/`, writes, malformed input, or anything to `/wp-admin`. Never more than two static version-file GETs. |
 | `automatorwp-webhooks` (auth) | CVE-2026-126173 | Confirm WordPress from the already-fetched root response, then plugin asset `?ver=` already in the page HTML. Otherwise at most two GETs of plugin `readme.txt`: documented slug `/wp-content/plugins/automatorwp-webhooks/readme.txt`, and when that path is uncertain the marketing-name alternate `/wp-content/plugins/automatorwp-pro-webhooks/readme.txt`. Medium, version unconfirmed / config-dependent, for AutomatorWP Pro Webhooks through 1.4.4 (fixed in 1.4.5; CVSS 9.8). Patchstack labels known-exploited (published 13 November 2026; not CISA KEV); Brandefense says exploitation is not confirmed. Evidence notes the exploitable Receive Webhook → Update User automation cannot be seen from outside. Info when the add-on is present but the version is hidden. No request when WordPress is not indicated. | Never requests AutomatorWP webhook endpoints (`/wp-json/automatorwp/...` or any webhook URL). Never sends password, user-ID, or webhook parameters. No POSTs, login or password-reset requests, writes, malformed input, or anything to `/wp-admin`. |
 | `estatik` (misconfig) | CVE-2026-125795 (GHSA-3cfv-f88w-c563) | Confirm WordPress from the already-fetched root response, then plugin asset `?ver=` already in the page HTML. When the plugin path is present without a version, one GET `/wp-content/plugins/estatik/readme.txt` Stable tag (readme header validated so a soft-404 does not match). Critical, version unconfirmed, for Estatik through 4.3.6 (fixed in 4.3.7, released 12 November 2026; CWE-98, CVSS 9.8). Patchstack known-exploited (Patchstack telemetry, not CISA KEV). Info when the plugin is present but the version is hidden. Non-WordPress targets and pages without an `estatik` asset yield no request. | Never calls listing-search or admin-ajax endpoints. Never sends template or path parameters or traversal strings. No POSTs or form submissions, no uploads, no writes, and nothing to `/wp-admin`. Never more than the single `readme.txt` GET. |
+| `confluence-axis` (misconfig) | CVE-2026-90436 | Fingerprint Confluence from the already-fetched root/login HTML (`ajs-version-number` / other `ajs-` meta tags, or the "Powered by Atlassian Confluence" footer). When Confluence is present without a version, at most one GET `/login.action`. Critical, version unconfirmed / Remote-API-dependent, for Data Center major <=9 below 9.2.28 (fixed in 9.2.28; 10.x removed Remote API; Atlassian Cloud unaffected). Apache Axis 1.x (<=1.4, EOL) unsafe-reflection unauthenticated RCE (CWE-470, CVSS 9.8); Rapid7 MDR observed exploitation 13 November 2026. Info when Confluence is present but the version is hidden. `*.atlassian.net` hosts are skipped. No request when Confluence is absent. | Never requests `/rpc/`, `/rpc/soap-axis/*`, `/rpc/xmlrpc`, any `?wsdl`, or other Axis/SOAP paths. No XML or SOAP bodies, no POST/PUT, no login attempts, no uploads, no writes, no malformed input. |
 
 The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
@@ -139,7 +140,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (675 test functions in `backend/tests/`):
+Tests (700 test functions in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q

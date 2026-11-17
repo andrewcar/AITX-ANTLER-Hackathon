@@ -54,6 +54,7 @@ from agents.cve_checks.btcpay import CHECK as BTCPAY
 from agents.cve_checks.bricksforge import CHECK as BRICKSFORGE
 from agents.cve_checks.automatorwp_webhooks import CHECK as AUTOMATORWP_WEBHOOKS
 from agents.cve_checks.estatik import CHECK as ESTATIK
+from agents.cve_checks.confluence_axis import CHECK as CONFLUENCE_AXIS
 import planner
 import main
 import orchestrator
@@ -136,6 +137,15 @@ BANNED = (
     "../",
     "%2e%2e",
     "%2E%2E",
+    "/rpc/",
+    "/rpc/soap-axis",
+    "/rpc/xmlrpc",
+    "soap-axis",
+    "?wsdl",
+    "wsdl",
+    "text/xml",
+    "application/soap",
+    "exceptionName",
 )
 
 
@@ -353,6 +363,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/estatik/readme.txt") == 0
     assert "estatik" not in blob.lower()
     assert "listing-search" not in blob.lower()
+    # Confluence Axis only probes /login.action after a Confluence fingerprint.
+    assert paths.count("/login.action") == 0
+    assert "/rpc/" not in blob
+    assert "soap-axis" not in blob.lower()
+    assert "xmlrpc" not in blob.lower()
+    assert "wsdl" not in blob.lower()
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2606,19 +2622,22 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "estatik"
-    assert ids[-2] == "automatorwp-webhooks"
-    assert ids[-3] == "bricksforge"
+    assert ids[-1] == "confluence-axis"
+    assert ids[-2] == "estatik"
+    assert ids[-3] == "automatorwp-webhooks"
+    assert ids[-4] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
+        "confluence-axis",
     ):
         assert required in ids
-    assert ids[-4] == "btcpay-server"
+    assert ids[-5] == "btcpay-server"
     assert BTCPAY.agent == "secrets"
     assert BRICKSFORGE.agent == "misconfig"
     assert AUTOMATORWP_WEBHOOKS.agent == "auth"
     assert ESTATIK.agent == "misconfig"
+    assert CONFLUENCE_AXIS.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -7072,3 +7091,447 @@ def test_estatik_check_source_is_get_only_static_fingerprint():
     assert ESTATIK.cve == "CVE-2026-125795"
     assert ESTATIK.id == "estatik"
     assert "4.3.7" in ESTATIK.fixed
+
+
+# --- Confluence Axis (CVE-2026-90436) ---------------------------------------
+
+CONFLUENCE_LOGIN = "/login.action"
+_CONFLUENCE_BANNED = (
+    "/rpc/",
+    "/rpc/soap-axis",
+    "/rpc/xmlrpc",
+    "soap-axis",
+    "?wsdl",
+    "wsdl",
+    "text/xml",
+    "application/soap",
+    "exceptionName",
+    "<Fault",
+    "SOAP",
+)
+
+
+def _confluence_html(version=None, *, powered=True, ajs_other=True):
+    metas = []
+    if version is not None:
+        metas.append(
+            f'<meta name="ajs-version-number" content="{version}">'
+        )
+    if ajs_other:
+        metas.append('<meta name="ajs-build-number" content="9012">')
+        metas.append('<meta name="ajs-context-path" content="">')
+    footer = (
+        '<li>Powered by Atlassian Confluence</li>' if powered else ""
+    )
+    return (
+        "<!DOCTYPE html><html><head><title>Confluence</title>"
+        + "".join(metas)
+        + "</head><body><p>Home</p>"
+        + footer
+        + "</body></html>"
+    )
+
+
+def _confluence_login_html(version=None):
+    ver_meta = (
+        f'<meta name="ajs-version-number" content="{version}">'
+        if version is not None
+        else ""
+    )
+    return (
+        "<!DOCTYPE html><html><head><title>Log In - Confluence</title>"
+        f'{ver_meta}'
+        '<meta name="ajs-build-number" content="9012">'
+        "</head><body>"
+        '<form action="/dologin.action" method="post">'
+        '<input name="os_username"><input name="os_password" type="password">'
+        "</form>"
+        "<li>Powered by Atlassian Confluence</li>"
+        "</body></html>"
+    )
+
+
+def _assert_confluence_passive(transport):
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    for _method, path, _session, _follow in transport.calls:
+        low = path.lower()
+        for banned in _CONFLUENCE_BANNED:
+            assert banned.lower() not in low
+        assert "/rpc/" not in low
+        assert "soap" not in low
+        assert "wsdl" not in low
+        assert "xmlrpc" not in low
+
+
+def test_confluence_axis_non_confluence_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html("9.2.27"),
+    }
+    transport.routes["/rpc/"] = {"status": 200, "body": "axis"}
+    transport.routes["/rpc/soap-axis/confluenceservice-v2"] = {
+        "status": 200, "body": "axis",
+    }
+    _install(monkeypatch, transport)
+    assert CONFLUENCE_AXIS.run(
+        {}, _ctx(body="<html><body>hello</body></html>")
+    ) == []
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("version,flagged", [
+    ("9.2.27", True),
+    ("9.2.28", False),
+    ("8.5.0", True),
+    ("8.5.22", True),
+    ("10.0.0", False),
+    ("10.0.1", False),
+    ("9.0.0", True),
+    ("1.0.0", True),
+    ("9.2.29", False),
+])
+def test_confluence_axis_version_matrix(monkeypatch, version, flagged):
+    transport = Transport()
+    transport.routes["/rpc/"] = {"status": 200, "body": "should-never"}
+    _install(monkeypatch, transport)
+    found = CONFLUENCE_AXIS.run(
+        {}, _ctx(body=_confluence_html(version)),
+    )
+    _assert_confluence_passive(transport)
+    assert transport.calls == []
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-90436" in found[0]["title"]
+        assert "CVE-2026-90436" in found[0]["evidence"]
+        assert "Remote API" in found[0]["evidence"]
+        assert "9.2.28" in found[0]["fix"]
+        assert "10.x" in found[0]["fix"] or "10.x" in found[0]["evidence"]
+        assert found[0]["check"]["match"] == f"confluence-axis:{version}"
+        assert "exploit" not in found[0]["title"].lower()
+        assert "exploits" not in found[0]["evidence"].lower().replace(
+            "exploited", ""
+        )
+        assert "rapid7.com" in found[0]["evidence"]
+        assert "confluence.atlassian.com/security" in found[0]["evidence"]
+    else:
+        assert found == []
+
+
+def test_confluence_axis_version_matrix_helper():
+    from agents.cve_checks.confluence_axis import affected
+
+    assert affected((9, 2, 27)) is True
+    assert affected((9, 2, 28)) is False
+    assert affected((8, 5, 0)) is True
+    assert affected((8, 5, 22)) is True
+    assert affected((10, 0, 0)) is False
+    assert affected((10, 0, 1)) is False
+    assert affected((9, 0, 0)) is True
+    assert affected((1, 0, 0)) is True
+
+
+def test_confluence_axis_atlassian_net_skipped(monkeypatch):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html("9.2.27"),
+    }
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_confluence_html("9.2.27"))
+    ctx.url = "https://example.atlassian.net/wiki"
+    ctx.recon_root = {
+        **ctx.recon_root,
+        "url": "https://example.atlassian.net/wiki",
+        "body_snippet": _confluence_html("9.2.27"),
+    }
+    assert CONFLUENCE_AXIS.run({}, ctx) == []
+    assert transport.calls == []
+
+
+def test_confluence_axis_fingerprint_without_version_fetches_login(
+    monkeypatch,
+):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html("9.2.27"),
+    }
+    transport.routes["/rpc/"] = {"status": 200, "body": "nope"}
+    transport.routes["/rpc/xmlrpc"] = {"status": 200, "body": "nope"}
+    transport.routes["/rpc/soap-axis/confluenceservice-v2?wsdl"] = {
+        "status": 200, "body": "nope",
+    }
+    _install(monkeypatch, transport)
+    found = CONFLUENCE_AXIS.run(
+        {},
+        _ctx(body=_confluence_html(None, powered=True, ajs_other=True)),
+    )
+    _assert_confluence_passive(transport)
+    assert [call[1] for call in transport.calls] == [CONFLUENCE_LOGIN]
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "confluence-axis:9.2.27"
+    assert "GET /login.action" in found[0]["evidence"]
+
+
+def test_confluence_axis_root_version_skips_login_get(monkeypatch):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html("9.2.27"),
+    }
+    _install(monkeypatch, transport)
+    found = CONFLUENCE_AXIS.run({}, _ctx(body=_confluence_html("8.5.3")))
+    assert transport.calls == []
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "confluence-axis:8.5.3"
+    assert "root response" in found[0]["evidence"]
+
+
+def test_confluence_axis_powered_by_footer_fingerprint(monkeypatch):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html("9.2.27"),
+    }
+    _install(monkeypatch, transport)
+    body = (
+        "<html><body><p>Space</p>"
+        "<li>Powered by Atlassian Confluence</li></body></html>"
+    )
+    found = CONFLUENCE_AXIS.run({}, _ctx(body=body))
+    assert [call[1] for call in transport.calls] == [CONFLUENCE_LOGIN]
+    assert found and found[0]["severity"] == "critical"
+
+
+def test_confluence_axis_fingerprint_without_version_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html(None),
+    }
+    _install(monkeypatch, transport)
+    found = CONFLUENCE_AXIS.run(
+        {},
+        _ctx(body=_confluence_html(None, powered=True, ajs_other=True)),
+    )
+    _assert_confluence_passive(transport)
+    assert [call[1] for call in transport.calls] == [CONFLUENCE_LOGIN]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "confluence-axis:unknown"
+    assert "version not visible" in found[0]["title"]
+    assert "CVE-2026-90436" in found[0]["title"]
+    assert "exploited" in found[0]["title"].lower()
+    assert "exploits" not in found[0]["evidence"].lower().replace(
+        "exploited", ""
+    )
+
+
+def test_confluence_axis_soft_404_login_is_info_not_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": (
+            "<!DOCTYPE html><html><head><title>Not Found</title></head>"
+            "<body><h1>404</h1><p>Everything is fine</p></body></html>"
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = CONFLUENCE_AXIS.run(
+        {},
+        _ctx(body=_confluence_html(None, powered=True, ajs_other=True)),
+    )
+    _assert_confluence_passive(transport)
+    assert [call[1] for call in transport.calls] == [CONFLUENCE_LOGIN]
+    assert all(item["severity"] != "critical" for item in found)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "confluence-axis:unknown"
+
+
+def test_confluence_axis_catch_all_200_without_fingerprint_no_finding(
+    monkeypatch,
+):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html("9.2.27"),
+    }
+    transport.routes["/"] = {"status": 200, "body": "catch-all"}
+    _install(monkeypatch, transport)
+    assert CONFLUENCE_AXIS.run(
+        {}, _ctx(body="<html><body>generic site</body></html>")
+    ) == []
+    assert transport.calls == []
+
+
+def test_confluence_axis_never_requests_rpc_or_wsdl(monkeypatch):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html("9.2.27"),
+    }
+    for path in (
+        "/rpc/",
+        "/rpc/soap-axis/confluenceservice-v2",
+        "/rpc/xmlrpc",
+        "/rpc/soap-axis/confluenceservice-v2?wsdl",
+        "/plugins/servlet/soap-axis1/confluenceservice-v2",
+    ):
+        transport.routes[path] = {"status": 200, "body": "axis"}
+    _install(monkeypatch, transport)
+    CONFLUENCE_AXIS.run(
+        {},
+        _ctx(body=_confluence_html(None, powered=True, ajs_other=True)),
+    )
+    _assert_confluence_passive(transport)
+    paths = [call[1] for call in transport.calls]
+    assert paths == [CONFLUENCE_LOGIN]
+    blob = " ".join(paths).lower()
+    for banned in _CONFLUENCE_BANNED:
+        assert banned.lower() not in blob
+    assert "/rpc/" not in blob
+
+
+def test_confluence_axis_at_most_one_get_and_never_mutates(monkeypatch):
+    transport = Transport()
+    transport.routes[CONFLUENCE_LOGIN] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _confluence_login_html("8.5.1"),
+    }
+    transport.routes["/dologin.action"] = {"status": 200, "body": "nope"}
+    transport.routes["/rpc/xmlrpc"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    found = CONFLUENCE_AXIS.run(
+        {},
+        _ctx(body=_confluence_html(None, powered=True, ajs_other=True)),
+    )
+    _assert_confluence_passive(transport)
+    assert [call[1] for call in transport.calls] == [CONFLUENCE_LOGIN]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+
+
+def test_confluence_axis_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_confluence_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                CONFLUENCE_AXIS.run(
+                    {},
+                    _ctx(
+                        body=_confluence_html(
+                            None, powered=True, ajs_other=True
+                        )
+                    ),
+                )
+    finally:
+        control.release(lease.run_id)
+
+
+def test_confluence_axis_get_is_audited(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_confluence_login_html("9.2.27").encode(),
+            headers=[("content-type", "text/html")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_confluence_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = CONFLUENCE_AXIS.run(
+                {},
+                _ctx(
+                    body=_confluence_html(None, powered=True, ajs_other=True)
+                ),
+            )
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert CONFLUENCE_LOGIN in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "/rpc/" not in rows[-1]["url"].lower()
+    assert "wsdl" not in rows[-1]["url"].lower()
+    assert "soap" not in rows[-1]["url"].lower()
+
+
+def test_confluence_axis_ajs_version_rev_attr_order(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    body = (
+        '<html><head><meta content="9.2.27" name="ajs-version-number">'
+        "</head><body>Powered by Atlassian Confluence</body></html>"
+    )
+    found = CONFLUENCE_AXIS.run({}, _ctx(body=body))
+    assert transport.calls == []
+    assert found and found[0]["check"]["match"] == "confluence-axis:9.2.27"
+
+
+def test_confluence_axis_remote_api_dependency_in_finding(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = CONFLUENCE_AXIS.run({}, _ctx(body=_confluence_html("9.2.27")))
+    assert found
+    assert UNCONFIRMED in found[0]["title"]
+    assert "Remote API" in found[0]["evidence"]
+    assert "does not confirm" in found[0]["evidence"].lower()
+    assert "disable" in found[0]["fix"].lower()
+
+
+def test_confluence_axis_check_source_is_get_only_passive():
+    text = (
+        ROOT / "agents" / "cve_checks" / "confluence_axis.py"
+    ).read_text(encoding="utf-8")
+    assert 'LOGIN = "/login.action"' in text
+    assert "fetch_path(ctx, LOGIN" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "/rpc/" in text
+    assert "soap-axis" in text or "Axis/SOAP" in text
+    assert "wsdl" in text
+    assert CONFLUENCE_AXIS.agent == "misconfig"
+    assert CONFLUENCE_AXIS.cve == "CVE-2026-90436"
+    assert CONFLUENCE_AXIS.id == "confluence-axis"
+    assert "9.2.28" in CONFLUENCE_AXIS.fixed
