@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from . import (
     acf_extended_pro,
     ai_engine,
+    ai_engine_upload,
     amelia_pro,
     apache_mod_http2,
     automatorwp_webhooks,
@@ -79,6 +80,7 @@ CHECKS: tuple[CveCheck, ...] = (
     wpforo.CHECK,
     ninja_forms_uploads.CHECK,
     ai_engine.CHECK,
+    ai_engine_upload.CHECK,
     masteriyo.CHECK,
     btcpay.CHECK,
     bricksforge.CHECK,
