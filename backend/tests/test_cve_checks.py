@@ -33,6 +33,7 @@ from agents.cve_checks.slicewp import CHECK as SLICEWP
 from agents.cve_checks.gravity_forms import CHECK as GRAVITY_FORMS
 from agents.cve_checks.gravity_forms_chunked import CHECK as GRAVITY_FORMS_CHUNKED
 from agents.cve_checks.ai_engine import CHECK as AI_ENGINE
+from agents.cve_checks.ai_engine_upload import CHECK as AI_ENGINE_UPLOAD
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.craft_cms import CHECK as CRAFT_CMS
 from agents.cve_checks.wpforo import CHECK as WPFORO
@@ -114,6 +115,7 @@ BANNED = (
     "wp-json/mwai",
     "/wp-json/mwai/",
     "mwai/",
+    "/mwai-ui/",
     "wp-json/bricksforge",
     "/wp-json/bricksforge/v1/form_submit",
     "bricksforge_regenerate_nonce",
@@ -5838,7 +5840,7 @@ def test_ninja_forms_uploads_check_source_is_get_only_static_fingerprint():
     assert "3.3.37" in NINJA_FORMS_UPLOADS.fixed
 
 
-# --- AI Engine (CVE-2026-123478) --------------------------------------------
+# --- AI Engine (CVE-2026-123478 + CVE-2026-125804) ------------------------
 
 AI_ENGINE_README = "/wp-content/plugins/ai-engine/readme.txt"
 _AI_ENGINE_WP_ROOT = (
@@ -5849,6 +5851,8 @@ _AI_ENGINE_BANNED = (
     "wp-json/mwai",
     "/wp-json/mwai/",
     "mwai/",
+    "/mwai-ui/",
+    "mwai-ui",
     "mcp",
     "admin-ajax.php",
     "/wp-admin",
@@ -5895,6 +5899,7 @@ def _assert_ai_engine_passive(transport):
     for path in paths:
         assert path == AI_ENGINE_README
         assert "wp-json/mwai" not in path.lower()
+        assert "/mwai-ui/" not in path.lower()
         assert "mcp" not in path.lower()
     assert paths.count(AI_ENGINE_README) <= 1
 
@@ -5909,6 +5914,16 @@ def test_ai_engine_version_matrix(version, vulnerable):
     assert bool(affected(parse_dotted(version))) is vulnerable
 
 
+@pytest.mark.parametrize("version,vulnerable", [
+    ("3.9.3", True), ("3.9.2", True), ("3.9.1", True), ("3.8.0", True),
+    ("3.9.4", False), ("3.10.0", False), ("4.0.0", False),
+])
+def test_ai_engine_upload_version_matrix(version, vulnerable):
+    from agents.cve_checks.ai_engine_upload import affected
+    from agents.cve_checks.versions import parse_dotted
+    assert bool(affected(parse_dotted(version))) is vulnerable
+
+
 def test_ai_engine_no_wordpress_sends_nothing(monkeypatch):
     transport = Transport()
     transport.routes[AI_ENGINE_README] = {
@@ -5917,9 +5932,9 @@ def test_ai_engine_no_wordpress_sends_nothing(monkeypatch):
         "body": _ai_engine_readme("3.9.1"),
     }
     _install(monkeypatch, transport)
-    assert AI_ENGINE.run(
-        {}, _ctx(body="<html><body>hello static site</body></html>"),
-    ) == []
+    ctx = _ctx(body="<html><body>hello static site</body></html>")
+    assert AI_ENGINE.run({}, ctx) == []
+    assert AI_ENGINE_UPLOAD.run({}, ctx) == []
     assert transport.calls == []
 
 
@@ -5933,15 +5948,23 @@ def test_ai_engine_wordpress_without_plugin_sends_nothing(monkeypatch):
     transport.routes["/wp-json/mwai/v1/simpleChatbotQuery"] = {
         "status": 200, "body": "should-never-be-fetched",
     }
+    transport.routes["/mwai-ui/v1/files/upload"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
     _install(monkeypatch, transport)
-    assert AI_ENGINE.run({}, _ctx(body=_AI_ENGINE_WP_ROOT)) == []
+    ctx = _ctx(body=_AI_ENGINE_WP_ROOT)
+    assert AI_ENGINE.run({}, ctx) == []
+    assert AI_ENGINE_UPLOAD.run({}, ctx) == []
     assert transport.calls == []
 
 
 def test_ai_engine_asset_ver_391_is_high_and_passive(monkeypatch):
+    # 3.9.1 is under both floors: CVE-2026-123478 and CVE-2026-125804.
     transport = Transport()
     _install(monkeypatch, transport)
-    found = AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html("3.9.1")))
+    ctx = _ctx(body=_ai_engine_asset_html("3.9.1"))
+    found = AI_ENGINE.run({}, ctx)
+    upload = AI_ENGINE_UPLOAD.run({}, ctx)
     assert transport.calls == []
     assert AI_ENGINE.agent == "misconfig"
     assert len(found) == 1
@@ -5960,12 +5983,56 @@ def test_ai_engine_asset_ver_391_is_high_and_passive(monkeypatch):
     assert "vexday.io" in found[0]["evidence"]
     assert "exploit" not in found[0]["title"].lower()
     assert "we exploit" not in found[0]["evidence"].lower()
+    assert len(upload) == 1
+    assert upload[0]["severity"] == "high"
+    assert upload[0]["check"]["match"] == "ai-engine-upload:3.9.1"
+    assert "CVE-2026-125804" in upload[0]["title"]
+    assert "3.9.4" in upload[0]["fix"]
+    assert "3.9.2" in upload[0]["fix"] and "3.9.3" in upload[0]["fix"]
+    assert "not enough" in upload[0]["fix"].lower()
 
 
 def test_ai_engine_392_is_not_flagged(monkeypatch):
+    # CVE-2026-123478 is fixed in 3.9.2, but CVE-2026-125804 still affects
+    # 3.9.2/3.9.3 — raise the floor to 3.9.4 for the upload XSS sibling.
     transport = Transport()
     _install(monkeypatch, transport)
-    assert AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html("3.9.2"))) == []
+    ctx = _ctx(body=_ai_engine_asset_html("3.9.2"))
+    assert AI_ENGINE.run({}, ctx) == []
+    found = AI_ENGINE_UPLOAD.run({}, ctx)
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert "CVE-2026-125804" in found[0]["title"]
+    assert found[0]["check"]["match"] == "ai-engine-upload:3.9.2"
+    assert "3.9.4" in found[0]["fix"]
+    assert "not enough" in found[0]["fix"].lower()
+
+
+def test_ai_engine_393_reports_125804_only(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_ai_engine_asset_html("3.9.3"))
+    assert AI_ENGINE.run({}, ctx) == []
+    found = AI_ENGINE_UPLOAD.run({}, ctx)
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert "CVE-2026-125804" in found[0]["title"]
+    assert found[0]["check"]["match"] == "ai-engine-upload:3.9.3"
+    assert "3.9.4" in found[0]["fix"]
+    assert "mwai-ui" in found[0]["evidence"].lower()
+    assert "Patchstack" in found[0]["evidence"] or "patchstack" in found[0]["evidence"].lower()
+    assert "exploit" not in found[0]["title"].lower()
+    assert "we exploit" not in found[0]["evidence"].lower()
+
+
+def test_ai_engine_394_reports_none(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_ai_engine_asset_html("3.9.4"))
+    assert AI_ENGINE.run({}, ctx) == []
+    assert AI_ENGINE_UPLOAD.run({}, ctx) == []
     assert transport.calls == []
 
 
@@ -5987,6 +6054,7 @@ def test_ai_engine_plugin_present_no_version_one_get_then_info(monkeypatch):
 
 
 def test_ai_engine_readme_fallback_391_is_vulnerable(monkeypatch):
+    # 3.9.1 via shared readme: both CVEs, readme fetched at most once.
     transport = Transport()
     transport.routes[AI_ENGINE_README] = {
         "status": 200,
@@ -5994,16 +6062,25 @@ def test_ai_engine_readme_fallback_391_is_vulnerable(monkeypatch):
         "body": _ai_engine_readme("3.9.1"),
     }
     _install(monkeypatch, transport)
-    found = AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    ctx = _ctx(body=_ai_engine_asset_html(None))
+    found = AI_ENGINE.run({}, ctx)
+    upload = AI_ENGINE_UPLOAD.run({}, ctx)
     _assert_ai_engine_passive(transport)
     assert [call[1] for call in transport.calls] == [AI_ENGINE_README]
+    assert [call[1] for call in transport.calls].count(AI_ENGINE_README) == 1
     assert found[0]["severity"] == "high"
     assert found[0]["check"]["match"] == "ai-engine:3.9.1"
     assert "CVE-2026-123478" in found[0]["evidence"]
     assert "3.9.2" in found[0]["fix"]
+    assert upload[0]["severity"] == "high"
+    assert upload[0]["check"]["match"] == "ai-engine-upload:3.9.1"
+    assert "CVE-2026-125804" in upload[0]["evidence"]
+    assert "3.9.4" in upload[0]["fix"]
 
 
 def test_ai_engine_readme_fallback_392_is_none(monkeypatch):
+    # Previously asserted 3.9.2 was fully clean for AI Engine. CVE-2026-123478
+    # remains clean at 3.9.2; CVE-2026-125804 still flags through 3.9.3.
     transport = Transport()
     transport.routes[AI_ENGINE_README] = {
         "status": 200,
@@ -6011,8 +6088,45 @@ def test_ai_engine_readme_fallback_392_is_none(monkeypatch):
         "body": _ai_engine_readme("3.9.2"),
     }
     _install(monkeypatch, transport)
-    assert AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None))) == []
+    ctx = _ctx(body=_ai_engine_asset_html(None))
+    assert AI_ENGINE.run({}, ctx) == []
+    found = AI_ENGINE_UPLOAD.run({}, ctx)
     _assert_ai_engine_passive(transport)
+    assert [call[1] for call in transport.calls].count(AI_ENGINE_README) == 1
+    assert found and found[0]["severity"] == "high"
+    assert "CVE-2026-125804" in found[0]["title"]
+    assert "3.9.4" in found[0]["fix"]
+    assert "not enough" in found[0]["fix"].lower()
+
+
+def test_ai_engine_both_cves_share_one_readme_get(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ai_engine_readme("3.9.1"),
+    }
+    transport.routes["/wp-json/mwai/v1/simpleChatbotQuery"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    transport.routes["/mwai-ui/v1/files/upload"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_ai_engine_asset_html(None))
+    first = AI_ENGINE.run({}, ctx)
+    second = AI_ENGINE_UPLOAD.run({}, ctx)
+    _assert_ai_engine_passive(transport)
+    assert [call[1] for call in transport.calls] == [AI_ENGINE_README]
+    assert [call[1] for call in transport.calls].count(AI_ENGINE_README) == 1
+    assert first and first[0]["severity"] == "high"
+    assert "CVE-2026-123478" in first[0]["evidence"]
+    assert second and second[0]["severity"] == "high"
+    assert "CVE-2026-125804" in second[0]["evidence"]
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "wp-json/mwai" not in blob
+    assert "/mwai-ui/" not in blob
+    assert "mcp" not in blob
 
 
 def test_ai_engine_at_most_one_readme_get_and_never_mwai_or_mcp(monkeypatch):
@@ -6028,17 +6142,24 @@ def test_ai_engine_at_most_one_readme_get_and_never_mwai_or_mcp(monkeypatch):
     transport.routes["/wp-json/mwai/v1/mcp"] = {
         "status": 200, "body": "should-never-be-fetched",
     }
+    transport.routes["/mwai-ui/v1/files/upload"] = {
+        "status": 200, "body": "should-never-be-fetched",
+    }
     transport.routes["/mcp"] = {
         "status": 200, "body": "should-never-be-fetched",
     }
     _install(monkeypatch, transport)
-    found = AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    ctx = _ctx(body=_ai_engine_asset_html(None))
+    found = AI_ENGINE.run({}, ctx)
+    upload = AI_ENGINE_UPLOAD.run({}, ctx)
     _assert_ai_engine_passive(transport)
     assert [call[1] for call in transport.calls] == [AI_ENGINE_README]
     assert all(call[0] == "GET" for call in transport.calls)
     assert found and found[0]["severity"] == "high"
+    assert upload and upload[0]["severity"] == "high"
     blob = " ".join(call[1] for call in transport.calls).lower()
     assert "wp-json/mwai" not in blob
+    assert "/mwai-ui/" not in blob
     assert "mcp" not in blob
     assert "chatbot" not in blob
     assert "<script" not in blob
@@ -6057,6 +6178,24 @@ def test_ai_engine_kill_switch_before_first_request_is_none(monkeypatch):
         with control.scope(lease):
             with pytest.raises(control.ScanStopped):
                 AI_ENGINE.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_ai_engine_upload_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_ai_engine_upload_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                AI_ENGINE_UPLOAD.run({}, _ctx(body=_ai_engine_asset_html(None)))
     finally:
         control.release(lease.run_id)
 
@@ -6094,6 +6233,7 @@ def test_ai_engine_requests_are_get_audited_and_have_no_body(monkeypatch):
     assert AI_ENGINE_README in rows[-1]["url"]
     assert "body" not in rows[-1]
     assert "wp-json/mwai" not in rows[-1]["url"].lower()
+    assert "/mwai-ui/" not in rows[-1]["url"].lower()
     assert "mcp" not in rows[-1]["url"].lower()
 
 
@@ -6114,15 +6254,84 @@ def test_ai_engine_check_source_is_get_only_static_fingerprint():
     assert text.count("fetch_path(") == 1
     assert "root_observation" in text
     assert "looks_like_wordpress" in text
+    assert "resolve_plugin_version" in text
     assert "post_brotli" not in text
     assert "urlopen" not in text
     assert "http.client" not in text
     assert "wp-json/mwai" in text.lower()
+    assert "/mwai-ui/" in text.lower()
     assert "Never sends chatbot" in text or "never sends chatbot" in text.lower()
     assert AI_ENGINE.agent == "misconfig"
     assert AI_ENGINE.cve == "CVE-2026-123478"
     assert AI_ENGINE.id == "ai-engine"
     assert "3.9.2" in AI_ENGINE.fixed
+
+
+def test_ai_engine_upload_check_source_reuses_helpers_no_upload():
+    text = (
+        ROOT / "agents" / "cve_checks" / "ai_engine_upload.py"
+    ).read_text(encoding="utf-8")
+    assert "fetch_path" not in text
+    assert "resolve_plugin_version" in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "/mwai-ui/" in text.lower()
+    assert "wp-json/mwai" in text.lower()
+    assert "Never sends chatbot" in text or "never sends chatbot" in text.lower()
+    assert AI_ENGINE_UPLOAD.agent == "misconfig"
+    assert AI_ENGINE_UPLOAD.cve == "CVE-2026-125804"
+    assert AI_ENGINE_UPLOAD.id == "ai-engine-upload"
+    assert "3.9.4" in AI_ENGINE_UPLOAD.fixed
+    assert "3.9.2" in AI_ENGINE_UPLOAD.fixed or "3.9.3" in AI_ENGINE_UPLOAD.fixed
+
+
+def test_ai_engine_upload_soft404_readme_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": (
+            "<!DOCTYPE html><html><head><title>Home</title></head>"
+            "<body>catch-all soft 404 page</body></html>"
+        ),
+    }
+    _install(monkeypatch, transport)
+    ctx = _ctx(body=_ai_engine_asset_html(None))
+    assert AI_ENGINE.run({}, ctx)[0]["severity"] == "info"
+    assert AI_ENGINE_UPLOAD.run({}, ctx)[0]["severity"] == "info"
+    _assert_ai_engine_passive(transport)
+    assert [call[1] for call in transport.calls].count(AI_ENGINE_README) == 1
+
+
+def test_ai_engine_upload_no_wordpress_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ai_engine_readme("3.9.3"),
+    }
+    _install(monkeypatch, transport)
+    assert AI_ENGINE_UPLOAD.run(
+        {}, _ctx(body="<html><body>hello static site</body></html>"),
+    ) == []
+    assert transport.calls == []
+
+
+def test_ai_engine_upload_plugin_present_no_version_one_get_then_info(monkeypatch):
+    transport = Transport()
+    transport.routes[AI_ENGINE_README] = {
+        "status": 404,
+        "content_type": "text/plain",
+        "body": "missing",
+    }
+    _install(monkeypatch, transport)
+    found = AI_ENGINE_UPLOAD.run({}, _ctx(body=_ai_engine_asset_html(None)))
+    _assert_ai_engine_passive(transport)
+    assert [call[1] for call in transport.calls] == [AI_ENGINE_README]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "ai-engine-upload:unknown"
+    assert "CVE-2026-125804" in found[0]["title"]
 
 # --- Bricksforge (CVE-2026-85097) ----------------------------------------
 
