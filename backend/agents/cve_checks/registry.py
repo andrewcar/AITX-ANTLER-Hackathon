@@ -22,6 +22,7 @@ from . import (
     langflow,
     latepoint,
     magento,
+    mercury,
     metabase,
     mlflow_gateway,
     nextjs,
@@ -89,6 +90,7 @@ CHECKS: tuple[CveCheck, ...] = (
     estatik.CHECK,
     ultra_addons_cf7.CHECK,
     confluence_axis.CHECK,
+    mercury.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
