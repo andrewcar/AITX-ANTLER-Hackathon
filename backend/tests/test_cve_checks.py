@@ -57,6 +57,8 @@ from agents.cve_checks.automatorwp_webhooks import CHECK as AUTOMATORWP_WEBHOOKS
 from agents.cve_checks.estatik import CHECK as ESTATIK
 from agents.cve_checks.ultra_addons_cf7 import CHECK as ULTRA_ADDONS_CF7
 from agents.cve_checks.confluence_axis import CHECK as CONFLUENCE_AXIS
+from agents.cve_checks.mercury import CHECK as MERCURY
+from agents.cve_checks.mercury import TERMINALS as MERCURY_TERMINALS
 import planner
 import main
 import orchestrator
@@ -158,6 +160,12 @@ BANNED = (
     "text/xml",
     "application/soap",
     "exceptionName",
+    "POST /api/terminals",
+    "/terminals/websocket",
+    "/api/kernels",
+    "/api/sessions",
+    "/api/contents",
+    "/api/shutdown",
 )
 
 
@@ -387,6 +395,14 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "soap-axis" not in blob.lower()
     assert "xmlrpc" not in blob.lower()
     assert "wsdl" not in blob.lower()
+    # Mercury only probes /api/terminals after a Mercury HTML fingerprint.
+    assert paths.count("/api/terminals") == 0
+    assert "/terminals/websocket" not in blob
+    assert "/api/kernels" not in blob
+    assert "/api/sessions" not in blob
+    assert "/api/contents" not in blob
+    assert "/api/shutdown" not in blob
+    assert "POST /api/terminals" not in blob
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2640,18 +2656,20 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "confluence-axis"
-    assert ids[-2] == "ultra-addons-cf7"
-    assert ids[-3] == "estatik"
-    assert ids[-4] == "automatorwp-webhooks"
-    assert ids[-5] == "bricksforge"
+    assert ids[-1] == "mercury"
+    assert ids[-2] == "confluence-axis"
+    assert ids[-3] == "ultra-addons-cf7"
+    assert ids[-4] == "estatik"
+    assert ids[-5] == "automatorwp-webhooks"
+    assert ids[-6] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
+        "mercury",
     ):
         assert required in ids
-    assert ids[-6] == "btcpay-server"
+    assert ids[-7] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2662,6 +2680,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert AI_ENGINE.agent == "misconfig"
     assert AI_ENGINE_UPLOAD.agent == "misconfig"
     assert CONFLUENCE_AXIS.agent == "misconfig"
+    assert MERCURY.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -8099,3 +8118,372 @@ def test_confluence_axis_check_source_is_get_only_passive():
     assert CONFLUENCE_AXIS.cve == "CVE-2026-90436"
     assert CONFLUENCE_AXIS.id == "confluence-axis"
     assert "9.2.28" in CONFLUENCE_AXIS.fixed
+
+
+# --- Mercury terminals (CVE-2026-111057) ------------------------------------
+
+_MERCURY_BANNED = (
+    "POST /api/terminals",
+    "/terminals/websocket",
+    "/api/kernels",
+    "/api/sessions",
+    "/api/contents",
+    "/api/shutdown",
+    "/files",
+    "/lab",
+)
+
+
+def _mercury_html(version=None):
+    version_bit = (
+        f'<meta name="generator" content="Mercury {version}">'
+        if version is not None
+        else ""
+    )
+    return (
+        "<!doctype html><html lang=\"en\"><head>"
+        "<title>Mercury</title>"
+        f"{version_bit}"
+        "<style>:root { --mercury-content-background-color: #fff; "
+        "--mercury-topbar-background-color: #0b0b0c; "
+        "--mercury-font-family: sans-serif; "
+        "--mercury-text-color: #0f172a; }</style>"
+        "</head><body>"
+        '<a class="brand" href="/">Mercury</a>'
+        '<p class="lead"><b>Welcome to Mercury.</b> '
+        "You're viewing notebooks turned into user-friendly apps.</p>"
+        '<footer class="ftr"><div class="ftr-inner">'
+        "MLJAR - next generation of AI tools</div></footer>"
+        "</body></html>"
+    )
+
+
+def _assert_mercury_passive(transport):
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    for _method, path, _session, _follow in transport.calls:
+        low = path.lower()
+        for banned in _MERCURY_BANNED:
+            assert banned.lower() not in low
+        assert path == MERCURY_TERMINALS or not path.startswith("/api/")
+
+
+def test_mercury_terminals_empty_list_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": "[]",
+    }
+    _install(monkeypatch, transport)
+    found = MERCURY.run({}, _ctx(body=_mercury_html()))
+    _assert_mercury_passive(transport)
+    assert [call[1] for call in transport.calls] == [MERCURY_TERMINALS]
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["id"] == "mercury"
+    assert found[0]["check"]["match"] == "mercury:unknown:terminals-open"
+    assert "unauthenticated" in found[0]["title"].lower()
+    assert "terminal" in found[0]["title"].lower()
+    assert "CVE-2026-111057" in found[0]["evidence"]
+    assert "not in CISA KEV" in found[0]["evidence"]
+    assert "not established" in found[0]["evidence"].lower()
+    assert "POST /api/terminals" not in found[0]["evidence"] or (
+        "no POST /api/terminals" in found[0]["evidence"]
+    )
+    assert "exploit" not in found[0]["title"].lower()
+    assert "exploits" not in found[0]["evidence"].lower().replace(
+        "exploitation", ""
+    )
+
+
+def test_mercury_terminals_named_list_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "application/json",
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps([
+            {"name": "1", "last_activity": "2026-08-21T12:00:00.000Z"},
+        ]),
+    }
+    _install(monkeypatch, transport)
+    found = MERCURY.run({}, _ctx(body=_mercury_html()))
+    _assert_mercury_passive(transport)
+    assert [call[1] for call in transport.calls] == [MERCURY_TERMINALS]
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "mercury:unknown:terminals-open"
+
+
+def test_mercury_terminals_403_no_terminal_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 403,
+        "content_type": "application/json",
+        "body": '{"message": "Forbidden"}',
+    }
+    _install(monkeypatch, transport)
+    found = MERCURY.run({}, _ctx(body=_mercury_html()))
+    _assert_mercury_passive(transport)
+    assert [call[1] for call in transport.calls] == [MERCURY_TERMINALS]
+    assert found == []
+    assert all(
+        "terminals-open" not in (item.get("check") or {}).get("match", "")
+        for item in found
+    )
+
+
+def test_mercury_terminals_html_catch_all_200_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": "<!DOCTYPE html><html><body>catch-all app shell</body></html>",
+    }
+    _install(monkeypatch, transport)
+    found = MERCURY.run({}, _ctx(body=_mercury_html()))
+    _assert_mercury_passive(transport)
+    assert [call[1] for call in transport.calls] == [MERCURY_TERMINALS]
+    assert found == []
+
+
+def test_mercury_non_mercury_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": "[]",
+    }
+    transport.routes["/api/kernels"] = {"status": 200, "body": "[]"}
+    transport.routes["/api/shutdown"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    assert MERCURY.run(
+        {}, _ctx(body="<html><body>hello mercury the planet</body></html>")
+    ) == []
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("version,severity,match_suffix", [
+    ("3.2.3", "critical", "terminals-cve"),
+    ("3.2.5", "high", "kernels-cve"),
+    ("3.2.10", "medium", "xss-cve"),
+    ("3.2.11", None, None),
+    ("3.2.13", None, None),
+    ("3.0.0", "critical", "terminals-cve"),
+    ("3.2.4", "high", "kernels-cve"),
+    ("3.2.6", "medium", "xss-cve"),
+])
+def test_mercury_version_matrix(monkeypatch, version, severity, match_suffix):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 403,
+        "content_type": "application/json",
+        "body": '{"message": "Forbidden"}',
+    }
+    transport.routes["/api/kernels"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    found = MERCURY.run({}, _ctx(body=_mercury_html(version)))
+    _assert_mercury_passive(transport)
+    assert [call[1] for call in transport.calls] == [MERCURY_TERMINALS]
+    if severity is None:
+        assert found == []
+    else:
+        assert len(found) == 1
+        assert found[0]["severity"] == severity
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-111057" in found[0]["title"]
+        assert found[0]["check"]["match"] == f"mercury:{version}:{match_suffix}"
+        assert "3.2.11" in found[0]["fix"]
+        assert "not in CISA KEV" in found[0]["evidence"]
+        assert "exploit" not in found[0]["title"].lower()
+
+
+def test_mercury_version_matrix_helper():
+    from agents.cve_checks.mercury import version_severity
+
+    assert version_severity((3, 2, 3)) == "critical"
+    assert version_severity((3, 2, 4)) == "high"
+    assert version_severity((3, 2, 5)) == "high"
+    assert version_severity((3, 2, 6)) == "medium"
+    assert version_severity((3, 2, 10)) == "medium"
+    assert version_severity((3, 2, 11)) is None
+    assert version_severity((3, 2, 13)) is None
+
+
+def test_mercury_open_terminals_prefers_exposure_over_version(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": "[]",
+    }
+    _install(monkeypatch, transport)
+    found = MERCURY.run({}, _ctx(body=_mercury_html("3.2.3")))
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "mercury:3.2.3:terminals-open"
+    assert "3.2.3" in found[0]["evidence"]
+
+
+def test_mercury_fingerprint_markers_from_templates(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 403,
+        "content_type": "application/json",
+        "body": "{}",
+    }
+    _install(monkeypatch, transport)
+    bodies = [
+        '<div id="mercury-loader" class="mercury-starting-loader"></div>',
+        '<div class="mercury-page-header"><div class="mercury-page-brand">'
+        "Mercury</div></div>",
+        "<noscript>Mercury requires JavaScript.</noscript>",
+        "footer: MLJAR - next generation of AI tools",
+    ]
+    for body in bodies:
+        transport.calls.clear()
+        assert MERCURY.run({}, _ctx(body=body)) == []
+        assert [call[1] for call in transport.calls] == [MERCURY_TERMINALS]
+
+
+def test_mercury_never_requests_forbidden_paths(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": "[]",
+    }
+    for path in (
+        "/api/kernels",
+        "/api/sessions",
+        "/api/contents",
+        "/api/shutdown",
+        "/terminals/websocket/1",
+        "/files/",
+        "/lab",
+    ):
+        transport.routes[path] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    MERCURY.run({}, _ctx(body=_mercury_html()))
+    _assert_mercury_passive(transport)
+    paths = [call[1] for call in transport.calls]
+    assert paths == [MERCURY_TERMINALS]
+    blob = " ".join(paths)
+    for banned in _MERCURY_BANNED:
+        assert banned not in blob
+
+
+def test_mercury_at_most_one_get_and_never_mutates(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": '[{"name":"1","last_activity":"2026-08-21T12:00:00.000Z"}]',
+    }
+    _install(monkeypatch, transport)
+    found = MERCURY.run({}, _ctx(body=_mercury_html()))
+    _assert_mercury_passive(transport)
+    assert [call[1] for call in transport.calls] == [MERCURY_TERMINALS]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+
+
+def test_mercury_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_mercury_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                MERCURY.run({}, _ctx(body=_mercury_html()))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_mercury_get_is_audited(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=b"[]",
+            headers=[("content-type", "application/json")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_mercury_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = MERCURY.run({}, _ctx(body=_mercury_html()))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert MERCURY_TERMINALS in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "/api/kernels" not in rows[-1]["url"].lower()
+    assert "websocket" not in rows[-1]["url"].lower()
+    assert "/api/shutdown" not in rows[-1]["url"].lower()
+
+
+def test_mercury_soft_404_json_object_is_not_terminal_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": '{"error":"not found"}',
+    }
+    _install(monkeypatch, transport)
+    assert MERCURY.run({}, _ctx(body=_mercury_html())) == []
+
+
+def test_mercury_list_item_without_name_is_not_terminal_finding(monkeypatch):
+    transport = Transport()
+    transport.routes[MERCURY_TERMINALS] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": '[{"last_activity":"2026-08-21T12:00:00.000Z"}]',
+    }
+    _install(monkeypatch, transport)
+    assert MERCURY.run({}, _ctx(body=_mercury_html())) == []
+
+
+def test_mercury_check_source_is_get_only_passive():
+    text = (
+        ROOT / "agents" / "cve_checks" / "mercury.py"
+    ).read_text(encoding="utf-8")
+    assert 'TERMINALS = "/api/terminals"' in text
+    assert "fetch_path(ctx, TERMINALS" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "POST /api/terminals" in text or "Never POST" in text
+    assert "/terminals/websocket" in text
+    assert "/api/kernels" in text
+    assert "/api/sessions" in text
+    assert "/api/contents" in text
+    assert "/api/shutdown" in text
+    assert MERCURY.agent == "misconfig"
+    assert MERCURY.cve == "CVE-2026-111057"
+    assert MERCURY.id == "mercury"
+    assert "3.2.11" in MERCURY.fixed
+    assert "3.2.4" in MERCURY.fixed
