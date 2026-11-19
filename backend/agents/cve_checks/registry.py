@@ -7,6 +7,7 @@ from . import (
     ai_engine_upload,
     amelia_pro,
     apache_mod_http2,
+    apache_roller,
     automatorwp_webhooks,
     bricksforge,
     btcpay,
@@ -97,6 +98,7 @@ CHECKS: tuple[CveCheck, ...] = (
     litellm_guardrail.CHECK,
     drupal_install.CHECK,
     redcap.CHECK,
+    apache_roller.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]

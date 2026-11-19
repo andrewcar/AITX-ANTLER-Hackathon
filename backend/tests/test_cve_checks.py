@@ -65,6 +65,7 @@ from agents.cve_checks.litellm_guardrail import READINESS as LITELLM_READINESS
 from agents.cve_checks.drupal_install import CHECK as DRUPAL_INSTALL
 from agents.cve_checks.drupal_install import INSTALL as DRUPAL_INSTALL_PATH
 from agents.cve_checks.redcap import CHECK as REDCAP
+from agents.cve_checks.apache_roller import CHECK as APACHE_ROLLER
 import planner
 import main
 import orchestrator
@@ -182,6 +183,8 @@ BANNED = (
     "/core/authorize.php",
     "/surveys/",
     "DataImport",
+    "/roller-services/xmlrpc",
+    "/roller/roller-services/xmlrpc",
 )
 
 
@@ -431,6 +434,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "/core/rebuild.php" not in blob
     assert "/core/authorize.php" not in blob
     assert "POST /core/install.php" not in blob
+    # Apache Roller is passive HTML only; never probes XML-RPC or admin/login.
+    assert "/roller-services/xmlrpc" not in blob
+    assert "/roller/roller-services/xmlrpc" not in blob
+    assert "/roller-ui/login" not in blob
+    assert "/roller-ui/admin" not in blob
+    assert "/roller-services/rest" not in blob
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2684,23 +2693,24 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "redcap"
-    assert ids[-2] == "drupal-install"
-    assert ids[-3] == "litellm-guardrail"
-    assert ids[-4] == "mercury"
-    assert ids[-5] == "confluence-axis"
-    assert ids[-6] == "ultra-addons-cf7"
-    assert ids[-7] == "estatik"
-    assert ids[-8] == "automatorwp-webhooks"
-    assert ids[-9] == "bricksforge"
+    assert ids[-1] == "apache-roller"
+    assert ids[-2] == "redcap"
+    assert ids[-3] == "drupal-install"
+    assert ids[-4] == "litellm-guardrail"
+    assert ids[-5] == "mercury"
+    assert ids[-6] == "confluence-axis"
+    assert ids[-7] == "ultra-addons-cf7"
+    assert ids[-8] == "estatik"
+    assert ids[-9] == "automatorwp-webhooks"
+    assert ids[-10] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
-        "mercury", "litellm-guardrail", "drupal-install", "redcap",
+        "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
     ):
         assert required in ids
-    assert ids[-10] == "btcpay-server"
+    assert ids[-11] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2715,6 +2725,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert LITELLM_GUARDRAIL.agent == "misconfig"
     assert DRUPAL_INSTALL.agent == "misconfig"
     assert REDCAP.agent == "recon"
+    assert APACHE_ROLLER.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -9405,3 +9416,266 @@ def test_redcap_check_source_is_passive_fingerprint_only():
     assert "17.4.4" in REDCAP.fixed
     assert "Nothing" in REDCAP.sends or "No extra" in REDCAP.sends
     assert "/surveys/" in REDCAP.does_not_send
+
+
+# --- Apache Roller (CVE-2026-129448) ----------------------------------------
+
+_ROLLER_BANNED = (
+    "/roller-services/xmlrpc",
+    "/roller/roller-services/xmlrpc",
+    "/roller-ui/login",
+    "/roller-ui/admin",
+    "/roller-services/rest",
+)
+
+
+def _roller_html(version=None, *, ui=True, powered=True, generator=False, theme=False):
+    parts = ['<!doctype html><html><head><title>blog</title>']
+    if generator and version:
+        parts.append(
+            f'<meta name="generator" content="Apache Roller {version}" />'
+        )
+    elif generator:
+        parts.append('<meta name="generator" content="Apache Roller" />')
+    if ui:
+        parts.append(
+            '<link rel="stylesheet" href="/roller-ui/styles/roller.css" />'
+            '<script src="/roller-ui/scripts/jquery4-summernote-compat.js"></script>'
+        )
+    if theme:
+        parts.append(
+            '<link rel="stylesheet" href="/themes/basic/basic-custom.css" />'
+        )
+        if version:
+            parts.append(
+                f'<link rel="stylesheet" href="/themes/gaurav/css/style.css?ver={version}" />'
+            )
+    parts.append("</head><body>")
+    if powered and version:
+        parts.append(
+            'Powered by <a href="http://roller.apache.org">Apache Roller '
+            f"Weblogger</a> Version {version} (build)"
+        )
+    elif powered:
+        parts.append("Powered by Apache Roller")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+def _assert_roller_passive(transport):
+    assert transport.calls == []
+    blob = " ".join(call[1] for call in transport.calls)
+    for banned in _ROLLER_BANNED:
+        assert banned not in blob
+    for banned in BANNED:
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("version,flagged", [
+    ("6.1.4", True),
+    ("6.1.5", True),
+    ("6.1.6", False),
+    ("6.1.7", False),
+    ("3.1", False),
+    ("3.1.0", False),
+    ("4.0.0", True),
+    ("5.1.2", True),
+])
+def test_apache_roller_version_matrix(monkeypatch, version, flagged):
+    transport = Transport()
+    transport.routes["/roller-services/xmlrpc"] = {"status": 200, "body": "nope"}
+    transport.routes["/roller/roller-services/xmlrpc"] = {"status": 200, "body": "nope"}
+    transport.routes["/roller-ui/login.rol"] = {"status": 200, "body": "login"}
+    _install(monkeypatch, transport)
+    found = APACHE_ROLLER.run({}, _ctx(body=_roller_html(version)))
+    _assert_roller_passive(transport)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-129448" in found[0]["title"]
+        parts = tuple(int(x) for x in version.split("."))
+        label = ".".join(str(p) for p in (parts + (0, 0, 0))[:3])
+        assert found[0]["check"]["match"] == f"apache-roller:{label}"
+        assert "CVE-2026-82384" in found[0]["evidence"]
+        assert "exploited per apache" in found[0]["evidence"].lower()
+        assert (
+            "not listed in cisa kev" in found[0]["evidence"].lower()
+            or "not in cisa kev" in found[0]["evidence"].lower()
+        )
+        assert "6.1.6" in found[0]["fix"]
+        assert "enabledForExtensions" in found[0]["fix"]
+        assert "exploit" not in found[0]["title"].lower()
+        assert "exploits" not in found[0]["evidence"].lower().replace(
+            "exploited", ""
+        )
+    else:
+        assert found == []
+
+
+def test_apache_roller_generator_meta_version(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    body = (
+        '<html><head><meta name="generator" content="Apache Roller 6.1.4" />'
+        "</head><body></body></html>"
+    )
+    found = APACHE_ROLLER.run({}, _ctx(body=body))
+    _assert_roller_passive(transport)
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "apache-roller:6.1.4"
+    assert "generator meta" in found[0]["evidence"]
+
+
+def test_apache_roller_asset_query_version(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = APACHE_ROLLER.run(
+        {},
+        _ctx(body=_roller_html("6.1.5", powered=False, theme=True)),
+    )
+    _assert_roller_passive(transport)
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "apache-roller:6.1.5"
+
+
+def test_apache_roller_no_version_is_info(monkeypatch):
+    transport = Transport()
+    transport.routes["/roller-services/xmlrpc"] = {"status": 200, "body": "x"}
+    _install(monkeypatch, transport)
+    found = APACHE_ROLLER.run({}, _ctx(body=_roller_html(None)))
+    _assert_roller_passive(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "apache-roller:unknown"
+    assert "version hidden" in found[0]["title"]
+    assert "6.1.6" in found[0]["title"]
+    assert "web.xml" in found[0]["title"]
+    assert "CVE-2026-129448" in found[0]["title"]
+    assert "not in CISA KEV" in found[0]["evidence"]
+
+
+def test_apache_roller_non_roller_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes["/roller-services/xmlrpc"] = {"status": 200, "body": "x"}
+    transport.routes["/roller/roller-services/xmlrpc"] = {"status": 200, "body": "x"}
+    transport.routes["/roller-ui/login.rol"] = {"status": 200, "body": "x"}
+    _install(monkeypatch, transport)
+    assert APACHE_ROLLER.run(
+        {}, _ctx(body="<html><body>hello roller derby</body></html>")
+    ) == []
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("body", [
+    '<link rel="stylesheet" href="/roller-ui/styles/roller.css" />',
+    '<script src="/roller-ui/scripts/date-fields.js"></script>',
+    '<a href="/roller-ui/menu.rol">Main Menu</a>',
+    '<link rel="stylesheet" href="/themes/frontpage/x.css" />',
+    '<link rel="stylesheet" href="/themes/hyde/theme.css" />',
+    "Powered by Apache Roller",
+    'Powered by <a href="http://roller.apache.org">Apache Roller Weblogger</a>',
+    '<link rel="search" href="/roller-services/opensearch" />',
+    "<generator>Apache Roller 6.1.5</generator>",
+])
+def test_apache_roller_fingerprint_markers(monkeypatch, body):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = APACHE_ROLLER.run({}, _ctx(body=f"<html><body>{body}</body></html>"))
+    _assert_roller_passive(transport)
+    # Markers without a version → info; feed generator body includes 6.1.5.
+    if "6.1.5" in body and "generator" in body.lower():
+        assert found and found[0]["severity"] == "critical"
+    else:
+        assert found and found[0]["severity"] == "info"
+
+
+def test_apache_roller_never_requests_forbidden_paths(monkeypatch):
+    transport = Transport()
+    for path in _ROLLER_BANNED + (
+        "/roller-ui/login.rol",
+        "/roller-ui/admin/globalConfig.rol",
+        "/roller-services/rest/weblogs",
+    ):
+        transport.routes[path] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    APACHE_ROLLER.run({}, _ctx(body=_roller_html("6.1.4")))
+    _assert_roller_passive(transport)
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths)
+    for banned in _ROLLER_BANNED:
+        assert banned not in blob
+
+
+def test_apache_roller_kill_switch_makes_no_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch / Roller check must not open a socket")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_roller_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            found = APACHE_ROLLER.run({}, _ctx(body=_roller_html("6.1.5")))
+    finally:
+        control.release(lease.run_id)
+    # Passive HTML reuse: no outbound request, so kill switch never trips.
+    assert found and found[0]["severity"] == "critical"
+
+
+def test_apache_roller_get_only_and_audited_when_transport_used(monkeypatch):
+    """Zero-request check: no GETs, so audit stays quiet for this check alone."""
+    transport = Transport()
+    _install(monkeypatch, transport)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_roller_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = APACHE_ROLLER.run({}, _ctx(body=_roller_html("6.1.4")))
+    finally:
+        control.release(lease.run_id)
+    assert transport.calls == []
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [
+        row for row in audit.recent(20)
+        if row["kind"] == "request" and row.get("run_id") == "run_roller_audit"
+    ]
+    assert rows == []
+
+
+def test_apache_roller_check_source_is_passive_only():
+    text = (
+        ROOT / "agents" / "cve_checks" / "apache_roller.py"
+    ).read_text(encoding="utf-8")
+    assert "root_observation" in text
+    assert "fetch_path" not in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "/roller-services/xmlrpc" in text
+    assert "/roller/roller-services/xmlrpc" in text
+    assert "enabledForExtensions" in text
+    assert APACHE_ROLLER.agent == "misconfig"
+    assert APACHE_ROLLER.cve == "CVE-2026-129448"
+    assert APACHE_ROLLER.id == "apache-roller"
+    assert "6.1.6" in APACHE_ROLLER.fixed
+    assert "No extra request" in APACHE_ROLLER.sends
+    assert "xmlrpc" in APACHE_ROLLER.does_not_send.lower()
+
+
+def test_apache_roller_affected_helper():
+    from agents.cve_checks.apache_roller import affected
+
+    assert affected((6, 1, 4)) is True
+    assert affected((6, 1, 5)) is True
+    assert affected((6, 1, 6)) is False
+    assert affected((4, 0, 0)) is True
+    assert affected((3, 1, 0)) is False
+    assert affected((3, 1)) is False
