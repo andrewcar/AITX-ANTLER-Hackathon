@@ -31,6 +31,7 @@ from . import (
     node_brotli,
     nodered,
     php2shell,
+    redcap,
     registration_form_woocommerce,
     slicewp,
     supabase_storage,
@@ -91,6 +92,7 @@ CHECKS: tuple[CveCheck, ...] = (
     ultra_addons_cf7.CHECK,
     confluence_axis.CHECK,
     mercury.CHECK,
+    redcap.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
