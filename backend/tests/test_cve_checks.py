@@ -59,6 +59,8 @@ from agents.cve_checks.ultra_addons_cf7 import CHECK as ULTRA_ADDONS_CF7
 from agents.cve_checks.confluence_axis import CHECK as CONFLUENCE_AXIS
 from agents.cve_checks.mercury import CHECK as MERCURY
 from agents.cve_checks.mercury import TERMINALS as MERCURY_TERMINALS
+from agents.cve_checks.litellm_guardrail import CHECK as LITELLM_GUARDRAIL
+from agents.cve_checks.litellm_guardrail import READINESS as LITELLM_READINESS
 from agents.cve_checks.apache_roller import CHECK as APACHE_ROLLER
 import planner
 import main
@@ -167,6 +169,10 @@ BANNED = (
     "/api/sessions",
     "/api/contents",
     "/api/shutdown",
+    "/guardrails/test_custom_code",
+    "/key/generate",
+    "/config/update",
+    "/chat/completions",
     "/roller-services/xmlrpc",
     "/roller/roller-services/xmlrpc",
 )
@@ -406,6 +412,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "/api/contents" not in blob
     assert "/api/shutdown" not in blob
     assert "POST /api/terminals" not in blob
+    # LiteLLM only probes /health/readiness after a LiteLLM fingerprint.
+    assert paths.count("/health/readiness") == 0
+    assert "/guardrails/test_custom_code" not in blob
+    assert "/key/generate" not in blob
+    assert "/config/update" not in blob
+    assert "/chat/completions" not in blob
     # Apache Roller is passive HTML only; never probes XML-RPC or admin/login.
     assert "/roller-services/xmlrpc" not in blob
     assert "/roller/roller-services/xmlrpc" not in blob
@@ -2666,20 +2678,21 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
     assert ids[-1] == "apache-roller"
-    assert ids[-2] == "mercury"
-    assert ids[-3] == "confluence-axis"
-    assert ids[-4] == "ultra-addons-cf7"
-    assert ids[-5] == "estatik"
-    assert ids[-6] == "automatorwp-webhooks"
-    assert ids[-7] == "bricksforge"
+    assert ids[-2] == "litellm-guardrail"
+    assert ids[-3] == "mercury"
+    assert ids[-4] == "confluence-axis"
+    assert ids[-5] == "ultra-addons-cf7"
+    assert ids[-6] == "estatik"
+    assert ids[-7] == "automatorwp-webhooks"
+    assert ids[-8] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
-        "mercury", "apache-roller",
+        "mercury", "litellm-guardrail", "apache-roller",
     ):
         assert required in ids
-    assert ids[-8] == "btcpay-server"
+    assert ids[-9] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2691,6 +2704,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert AI_ENGINE_UPLOAD.agent == "misconfig"
     assert CONFLUENCE_AXIS.agent == "misconfig"
     assert MERCURY.agent == "misconfig"
+    assert LITELLM_GUARDRAIL.agent == "misconfig"
     assert APACHE_ROLLER.agent == "misconfig"
 
 
@@ -8498,6 +8512,293 @@ def test_mercury_check_source_is_get_only_passive():
     assert MERCURY.id == "mercury"
     assert "3.2.11" in MERCURY.fixed
     assert "3.2.4" in MERCURY.fixed
+
+
+# --- LiteLLM guardrail sandbox escape (CVE-2026-40217) ---------------------
+
+_LITELLM_BANNED = (
+    "/guardrails/test_custom_code",
+    "/key/generate",
+    "/config/update",
+    "/chat/completions",
+    "/key/",
+    "/user/",
+    "/team/",
+    "/config/",
+    "/model/new",
+    "Authorization",
+    "x-litellm-api-key",
+)
+
+
+def _litellm_html():
+    return (
+        "<!DOCTYPE html><html><head>"
+        "<title>LiteLLM API - Swagger UI</title>"
+        '<link rel="stylesheet" href="/swagger/swagger-ui.css">'
+        '<link rel="icon" href="/swagger/favicon.png">'
+        "</head><body>"
+        "<div id=\"swagger-ui\"></div>"
+        "<p>Proxy Server to call 100+ LLMs in the OpenAI format</p>"
+        "<p>LiteLLM Admin Panel on /ui</p>"
+        '<script src="/swagger/swagger-ui-bundle.js"></script>'
+        "</body></html>"
+    )
+
+
+def _litellm_readiness(version: str) -> dict:
+    return {
+        "status": 200,
+        "content_type": "application/json",
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps({
+            "status": "healthy",
+            "db": "connected",
+            "cache": None,
+            "litellm_version": version,
+            "success_callbacks": [],
+        }),
+    }
+
+
+def _assert_litellm_passive(transport):
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    for _method, path, _session, _follow in transport.calls:
+        low = path.lower()
+        for banned in _LITELLM_BANNED:
+            assert banned.lower() not in low
+        assert path == LITELLM_READINESS or not path.startswith("/guardrails")
+        assert not path.startswith("/key")
+        assert not path.startswith("/user")
+        assert not path.startswith("/team")
+        assert not path.startswith("/config")
+        assert path != "/chat/completions"
+        assert path != "/model/new"
+
+
+@pytest.mark.parametrize("version", ["1.83.9", "1.81.8", "1.82.5", "1.83.10"])
+def test_litellm_vulnerable_versions_are_high(monkeypatch, version):
+    transport = Transport()
+    transport.routes[LITELLM_READINESS] = _litellm_readiness(version)
+    transport.routes["/guardrails/test_custom_code"] = {"status": 200, "body": "nope"}
+    transport.routes["/key/generate"] = {"status": 200, "body": "nope"}
+    transport.routes["/chat/completions"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    found = LITELLM_GUARDRAIL.run({}, _ctx(body=_litellm_html()))
+    _assert_litellm_passive(transport)
+    assert [call[1] for call in transport.calls] == [LITELLM_READINESS]
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["id"] == "litellm-guardrail"
+    assert found[0]["check"]["match"] == f"litellm:{version}"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-40217" in found[0]["title"]
+    assert "CISA KEV" in found[0]["evidence"] or "exploited in the wild" in found[0]["evidence"].lower()
+    assert "proxy-admin" in found[0]["evidence"].lower()
+    assert "1.83.11" in found[0]["fix"]
+    assert "exploit" not in found[0]["title"].lower()
+    assert "exploits" not in found[0]["evidence"].lower().replace("exploited", "")
+
+
+@pytest.mark.parametrize("version", ["1.83.11", "1.84.0", "1.81.7", "1.80.0"])
+def test_litellm_fixed_or_pre_intro_versions_are_none(monkeypatch, version):
+    transport = Transport()
+    transport.routes[LITELLM_READINESS] = _litellm_readiness(version)
+    _install(monkeypatch, transport)
+    found = LITELLM_GUARDRAIL.run({}, _ctx(body=_litellm_html()))
+    _assert_litellm_passive(transport)
+    assert [call[1] for call in transport.calls] == [LITELLM_READINESS]
+    assert found == []
+
+
+@pytest.mark.parametrize("status,body,content_type", [
+    (401, '{"detail":"Unauthorized"}', "application/json"),
+    (404, "Not Found", "text/plain"),
+    (200, "<!DOCTYPE html><html><body>catch-all app shell</body></html>", "text/html"),
+    (200, '{"status":"healthy","db":"connected"}', "application/json"),
+])
+def test_litellm_opaque_readiness_is_not_high(monkeypatch, status, body, content_type):
+    transport = Transport()
+    transport.routes[LITELLM_READINESS] = {
+        "status": status,
+        "content_type": content_type,
+        "headers": {"content-type": content_type},
+        "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = LITELLM_GUARDRAIL.run({}, _ctx(body=_litellm_html()))
+    _assert_litellm_passive(transport)
+    assert [call[1] for call in transport.calls] == [LITELLM_READINESS]
+    assert all(item["severity"] != "high" for item in found)
+    if found:
+        assert found[0]["severity"] == "info"
+        assert found[0]["check"]["match"] == "litellm:unknown"
+
+
+def test_litellm_non_litellm_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[LITELLM_READINESS] = _litellm_readiness("1.83.9")
+    transport.routes["/guardrails/test_custom_code"] = {"status": 200, "body": "nope"}
+    transport.routes["/chat/completions"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    assert LITELLM_GUARDRAIL.run(
+        {}, _ctx(body="<html><body>hello litellm the library docs</body></html>")
+    ) == []
+    assert transport.calls == []
+
+
+def test_litellm_fingerprint_markers(monkeypatch):
+    transport = Transport()
+    transport.routes[LITELLM_READINESS] = _litellm_readiness("1.83.11")
+    _install(monkeypatch, transport)
+    bodies = [
+        "<title>LiteLLM API - Swagger UI</title>",
+        "LiteLLM Admin Panel on /ui Create, Edit Keys with SSO",
+        "Proxy Server to call 100+ LLMs in the OpenAI format",
+        '<script src="/ui/_next/static/chunks/main.js"></script>',
+        (
+            '<title>LiteLLM API</title>'
+            '<script src="/swagger/swagger-ui-bundle.js"></script>'
+        ),
+    ]
+    for body in bodies:
+        transport.calls.clear()
+        assert LITELLM_GUARDRAIL.run({}, _ctx(body=body)) == []
+        assert [call[1] for call in transport.calls] == [LITELLM_READINESS]
+
+
+def test_litellm_never_requests_forbidden_paths(monkeypatch):
+    transport = Transport()
+    transport.routes[LITELLM_READINESS] = _litellm_readiness("1.83.9")
+    for path in (
+        "/guardrails/test_custom_code",
+        "/key/generate",
+        "/key/info",
+        "/user/list",
+        "/team/list",
+        "/config/update",
+        "/model/new",
+        "/chat/completions",
+    ):
+        transport.routes[path] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    LITELLM_GUARDRAIL.run({}, _ctx(body=_litellm_html()))
+    _assert_litellm_passive(transport)
+    paths = [call[1] for call in transport.calls]
+    assert paths == [LITELLM_READINESS]
+    blob = " ".join(paths)
+    for banned in _LITELLM_BANNED:
+        assert banned not in blob
+
+
+def test_litellm_at_most_one_get_and_never_mutates(monkeypatch):
+    transport = Transport()
+    transport.routes[LITELLM_READINESS] = _litellm_readiness("1.81.8")
+    _install(monkeypatch, transport)
+    found = LITELLM_GUARDRAIL.run({}, _ctx(body=_litellm_html()))
+    _assert_litellm_passive(transport)
+    assert [call[1] for call in transport.calls] == [LITELLM_READINESS]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "high"
+
+
+def test_litellm_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_litellm_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                LITELLM_GUARDRAIL.run({}, _ctx(body=_litellm_html()))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_litellm_get_is_audited(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        headers = req.header_items() if hasattr(req, "header_items") else []
+        header_blob = " ".join(f"{k}:{v}" for k, v in headers).lower()
+        assert "authorization" not in header_blob
+        assert "x-litellm-api-key" not in header_blob
+        return _Resp(
+            body=json.dumps({
+                "status": "healthy",
+                "db": "connected",
+                "litellm_version": "1.83.9",
+            }).encode(),
+            headers=[("content-type", "application/json")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_litellm_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = LITELLM_GUARDRAIL.run({}, _ctx(body=_litellm_html()))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "high"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert LITELLM_READINESS in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "/guardrails/test_custom_code" not in rows[-1]["url"].lower()
+    assert "/key/" not in rows[-1]["url"].lower()
+    assert "/chat/completions" not in rows[-1]["url"].lower()
+
+
+def test_litellm_affected_helper():
+    from agents.cve_checks.litellm_guardrail import affected
+
+    assert affected((1, 81, 8)) is True
+    assert affected((1, 83, 9)) is True
+    assert affected((1, 83, 10)) is True
+    assert affected((1, 83, 11)) is False
+    assert affected((1, 81, 7)) is False
+    assert affected((1, 84, 0)) is False
+
+
+def test_litellm_check_source_is_get_only_passive():
+    text = (
+        ROOT / "agents" / "cve_checks" / "litellm_guardrail.py"
+    ).read_text(encoding="utf-8")
+    assert 'READINESS = "/health/readiness"' in text
+    assert "fetch_path(ctx, READINESS" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "/guardrails/test_custom_code" in text
+    assert "/key/" in text
+    assert "/chat/completions" in text
+    assert "1.83.11" in text
+    assert "1.83.10" in text  # discrepancy comment
+    assert LITELLM_GUARDRAIL.agent == "misconfig"
+    assert LITELLM_GUARDRAIL.cve == "CVE-2026-40217"
+    assert LITELLM_GUARDRAIL.id == "litellm-guardrail"
+    assert "1.83.11" in LITELLM_GUARDRAIL.fixed
+
 
 # --- Apache Roller (CVE-2026-129448) ----------------------------------------
 
