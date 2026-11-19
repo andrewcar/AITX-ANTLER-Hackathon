@@ -15,6 +15,7 @@ from . import (
     contact_form_7,
     craft_cms,
     dependency_files,
+    drupal_install,
     estatik,
     gpustack_auth,
     gravity_forms,
@@ -91,6 +92,7 @@ CHECKS: tuple[CveCheck, ...] = (
     ultra_addons_cf7.CHECK,
     confluence_axis.CHECK,
     mercury.CHECK,
+    drupal_install.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
