@@ -22,6 +22,7 @@ from . import (
     gravity_forms_chunked,
     langflow,
     latepoint,
+    litellm_guardrail,
     magento,
     mercury,
     metabase,
@@ -92,6 +93,7 @@ CHECKS: tuple[CveCheck, ...] = (
     ultra_addons_cf7.CHECK,
     confluence_axis.CHECK,
     mercury.CHECK,
+    litellm_guardrail.CHECK,
     drupal_install.CHECK,
 )
 
