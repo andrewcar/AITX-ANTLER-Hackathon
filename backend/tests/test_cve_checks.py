@@ -1,5 +1,6 @@
 """Exploited-CVE checks. Recorded responses only — nothing here opens a socket."""
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
@@ -61,6 +62,8 @@ from agents.cve_checks.mercury import CHECK as MERCURY
 from agents.cve_checks.mercury import TERMINALS as MERCURY_TERMINALS
 from agents.cve_checks.litellm_guardrail import CHECK as LITELLM_GUARDRAIL
 from agents.cve_checks.litellm_guardrail import READINESS as LITELLM_READINESS
+from agents.cve_checks.drupal_install import CHECK as DRUPAL_INSTALL
+from agents.cve_checks.drupal_install import INSTALL as DRUPAL_INSTALL_PATH
 from agents.cve_checks.redcap import CHECK as REDCAP
 import planner
 import main
@@ -173,6 +176,10 @@ BANNED = (
     "/key/generate",
     "/config/update",
     "/chat/completions",
+    "POST /core/install.php",
+    "/update.php",
+    "/core/rebuild.php",
+    "/core/authorize.php",
     "/surveys/",
     "DataImport",
 )
@@ -418,6 +425,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert "/key/generate" not in blob
     assert "/config/update" not in blob
     assert "/chat/completions" not in blob
+    # Drupal installer only probes /core/install.php after a Drupal fingerprint.
+    assert paths.count("/core/install.php") == 0
+    assert "/update.php" not in blob
+    assert "/core/rebuild.php" not in blob
+    assert "/core/authorize.php" not in blob
+    assert "POST /core/install.php" not in blob
     assert all(
         path == "/wp-content/plugins/ameliabooking/readme.txt"
         or "ameliabooking" not in path
@@ -2672,21 +2685,22 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
     assert ids[-1] == "redcap"
-    assert ids[-2] == "litellm-guardrail"
-    assert ids[-3] == "mercury"
-    assert ids[-4] == "confluence-axis"
-    assert ids[-5] == "ultra-addons-cf7"
-    assert ids[-6] == "estatik"
-    assert ids[-7] == "automatorwp-webhooks"
-    assert ids[-8] == "bricksforge"
+    assert ids[-2] == "drupal-install"
+    assert ids[-3] == "litellm-guardrail"
+    assert ids[-4] == "mercury"
+    assert ids[-5] == "confluence-axis"
+    assert ids[-6] == "ultra-addons-cf7"
+    assert ids[-7] == "estatik"
+    assert ids[-8] == "automatorwp-webhooks"
+    assert ids[-9] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
-        "mercury", "litellm-guardrail", "redcap",
+        "mercury", "litellm-guardrail", "drupal-install", "redcap",
     ):
         assert required in ids
-    assert ids[-9] == "btcpay-server"
+    assert ids[-10] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2699,6 +2713,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert CONFLUENCE_AXIS.agent == "misconfig"
     assert MERCURY.agent == "misconfig"
     assert LITELLM_GUARDRAIL.agent == "misconfig"
+    assert DRUPAL_INSTALL.agent == "misconfig"
     assert REDCAP.agent == "recon"
 
 
@@ -8792,6 +8807,431 @@ def test_litellm_check_source_is_get_only_passive():
     assert LITELLM_GUARDRAIL.cve == "CVE-2026-40217"
     assert LITELLM_GUARDRAIL.id == "litellm-guardrail"
     assert "1.83.11" in LITELLM_GUARDRAIL.fixed
+
+
+# --- Drupal core installer (CVE-2026-132165 / SA-CORE-2026-017) --------------
+
+_DRUPAL_INSTALL_BANNED = (
+    "POST /core/install.php",
+    "/update.php",
+    "/core/rebuild.php",
+    "/core/authorize.php",
+    "/user/login",
+    "settings.php",
+    "?langcode=",
+    "?profile=",
+    "?rewrite=",
+)
+
+
+def _drupal_root_html(version=None, *, generator=True, settings=True):
+    parts = ['<!doctype html><html><head>']
+    if generator:
+        parts.append(
+            '<meta name="Generator" content="Drupal 11 (https://www.drupal.org)" />'
+        )
+    if version is not None:
+        parts.append(
+            f'<script src="/core/misc/drupal.js?v={version}"></script>'
+            f'<link rel="stylesheet" href="/core/themes/olivero/css/base/base.css'
+            f'?v={version}">'
+        )
+    parts.append("</head><body>")
+    if settings:
+        parts.append("<script>window.drupalSettings = {};</script>")
+    parts.append("<p>Hello Drupal</p></body></html>")
+    return "".join(parts)
+
+
+def _installer_already_installed_html():
+    return (
+        "<!doctype html><html><head>"
+        '<link rel="stylesheet" href="/core/themes/claro/css/install-page.css">'
+        "<title>Drupal already installed</title></head>"
+        '<body class="install-page">'
+        "<h1>Drupal already installed</h1>"
+        "<p>To start over, you must empty your existing database.</p>"
+        "</body></html>"
+    )
+
+
+def _installer_choose_language_html():
+    return (
+        "<!doctype html><html><head>"
+        '<link rel="stylesheet" '
+        'href="/core/themes/default_admin/css/theme/install-page.css">'
+        "<title>Choose language | Drupal</title></head>"
+        '<body class="install-page">'
+        "<h2>Choose language</h2>"
+        '<form id="install-select-language" action="/core/install.php" method="post">'
+        '<select name="langcode"><option value="en">English</option></select>'
+        "</form></body></html>"
+    )
+
+
+def _assert_drupal_install_passive(transport):
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert all(call[2] is None and call[3] is False for call in transport.calls)
+    for _method, path, _session, _follow in transport.calls:
+        low = path.lower()
+        assert "?" not in path
+        for banned in _DRUPAL_INSTALL_BANNED:
+            assert banned.lower() not in low
+        assert path == DRUPAL_INSTALL_PATH
+
+
+def test_drupal_install_version_matrix():
+    from agents.cve_checks.drupal_install import affected
+
+    assert affected((10, 6, 21)) is True
+    assert affected((10, 6, 22)) is False
+    assert affected((10, 5, 0)) is True
+    assert affected((9, 5, 11)) is True
+    assert affected((11, 3, 21)) is True
+    assert affected((11, 3, 22)) is False
+    assert affected((11, 0, 0)) is True
+    assert affected((11, 2, 9)) is True
+    assert affected((11, 4, 12)) is True
+    assert affected((11, 4, 13)) is False
+    assert affected((11, 4, 0)) is True
+    assert affected((12, 0, 0)) is False
+
+
+@pytest.mark.parametrize("version,flagged", [
+    ("11.3.21", True),
+    ("11.3.22", False),
+    ("10.6.21", True),
+    ("10.6.22", False),
+    ("11.4.12", True),
+    ("11.4.13", False),
+    ("11.0.0", True),
+    ("11.2.8", True),
+])
+def test_drupal_install_asset_version_high_or_none(monkeypatch, version, flagged):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 403,
+        "content_type": "text/html",
+        "body": "Forbidden",
+    }
+    transport.routes["/update.php"] = {"status": 200, "body": "nope"}
+    transport.routes["/core/rebuild.php"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html(version)))
+    _assert_drupal_install_passive(transport)
+    assert [call[1] for call in transport.calls] == [DRUPAL_INSTALL_PATH]
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "high"
+        assert UNCONFIRMED in found[0]["title"]
+        assert found[0]["check"]["match"] == f"drupal-install:{version}"
+        assert "CVE-2026-132165" in found[0]["title"]
+        assert "not yet reported" in found[0]["evidence"].lower()
+        assert "exploit" not in found[0]["title"].lower()
+        # Ignore source URL slugs (BleepingComputer path contains "exploits").
+        evidence_no_urls = re.sub(
+            r"https?://\S+",
+            "",
+            found[0]["evidence"].lower().replace("exploitation", ""),
+        )
+        assert "exploits" not in evidence_no_urls
+    else:
+        assert found == []
+
+
+def test_drupal_install_200_installer_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _installer_already_installed_html(),
+    }
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html()))
+    _assert_drupal_install_passive(transport)
+    assert [call[1] for call in transport.calls] == [DRUPAL_INSTALL_PATH]
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert "installer reachable" in found[0]["title"].lower()
+    assert found[0]["check"]["match"] == "drupal-install:unknown:installer-open"
+    assert "CVE-2026-132165" in found[0]["evidence"]
+    assert "not yet reported" in found[0]["evidence"].lower()
+    assert "exploit" not in found[0]["title"].lower()
+
+
+def test_drupal_install_choose_language_form_is_critical(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _installer_choose_language_html(),
+    }
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html()))
+    _assert_drupal_install_passive(transport)
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "drupal-install:unknown:installer-open"
+
+
+def test_drupal_install_403_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 403,
+        "content_type": "text/html",
+        "body": "Forbidden",
+    }
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html()))
+    _assert_drupal_install_passive(transport)
+    assert found == []
+
+
+def test_drupal_install_catchall_200_without_markers_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": "<!DOCTYPE html><html><body>catch-all app shell</body></html>",
+    }
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html()))
+    _assert_drupal_install_passive(transport)
+    assert found == []
+
+
+def test_drupal_install_404_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 404,
+        "content_type": "text/html",
+        "body": "Not Found",
+    }
+    _install(monkeypatch, transport)
+    assert DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html())) == []
+    assert [call[1] for call in transport.calls] == [DRUPAL_INSTALL_PATH]
+
+
+def test_drupal_install_vulnerable_version_plus_installer_both(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _installer_already_installed_html(),
+    }
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html("11.3.21")))
+    _assert_drupal_install_passive(transport)
+    assert len(found) == 2
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "drupal-install:11.3.21"
+    assert found[1]["severity"] == "critical"
+    assert found[1]["check"]["match"] == "drupal-install:11.3.21:installer-open"
+
+
+def test_drupal_install_patched_plus_installer_is_hardening_low(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _installer_already_installed_html(),
+    }
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html("11.3.22")))
+    _assert_drupal_install_passive(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "low"
+    assert found[0]["check"]["match"] == (
+        "drupal-install:11.3.22:installer-hardening"
+    )
+    assert found[0].get("confidence") == "low"
+
+
+def test_drupal_install_non_drupal_sends_nothing(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _installer_already_installed_html(),
+    }
+    transport.routes["/update.php"] = {"status": 200, "body": "nope"}
+    transport.routes["/core/rebuild.php"] = {"status": 200, "body": "nope"}
+    transport.routes["/core/authorize.php"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    assert DRUPAL_INSTALL.run(
+        {}, _ctx(body="<html><body>hello world</body></html>")
+    ) == []
+    assert transport.calls == []
+
+
+def test_drupal_install_x_generator_header_gates_request(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 403,
+        "content_type": "text/html",
+        "body": "Forbidden",
+    }
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run(
+        {},
+        _ctx(
+            headers={"x-generator": "Drupal 10 (https://www.drupal.org)"},
+            body="<html><body>plain</body></html>",
+        ),
+    )
+    _assert_drupal_install_passive(transport)
+    assert [call[1] for call in transport.calls] == [DRUPAL_INSTALL_PATH]
+    assert found == []
+
+
+def test_drupal_install_major_only_generator_is_version_unknown(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 403,
+        "body": "Forbidden",
+    }
+    _install(monkeypatch, transport)
+    # Meta generator is major-only; without ?v= assets there is no version finding.
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html(None)))
+    assert found == []
+    assert [call[1] for call in transport.calls] == [DRUPAL_INSTALL_PATH]
+
+
+def test_drupal_install_never_requests_forbidden_paths(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _installer_already_installed_html(),
+    }
+    for path in (
+        "/update.php",
+        "/core/rebuild.php",
+        "/core/authorize.php",
+        "/user/login",
+        "/core/install.php?langcode=en",
+        "/core/install.php?profile=standard",
+        "/sites/default/settings.php",
+    ):
+        transport.routes[path] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html()))
+    _assert_drupal_install_passive(transport)
+    paths = [call[1] for call in transport.calls]
+    assert paths == [DRUPAL_INSTALL_PATH]
+    blob = " ".join(paths)
+    for banned in _DRUPAL_INSTALL_BANNED:
+        assert banned not in blob
+
+
+def test_drupal_install_at_most_one_get_and_never_mutates(monkeypatch):
+    transport = Transport()
+    transport.routes[DRUPAL_INSTALL_PATH] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": _installer_already_installed_html(),
+    }
+    _install(monkeypatch, transport)
+    found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html("10.6.21")))
+    _assert_drupal_install_passive(transport)
+    assert [call[1] for call in transport.calls] == [DRUPAL_INSTALL_PATH]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert any(item["severity"] == "critical" for item in found)
+
+
+def test_drupal_install_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_drupal_install_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html()))
+    finally:
+        control.release(lease.run_id)
+
+
+def test_drupal_install_get_is_audited_without_query_string(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        return _Resp(
+            body=_installer_already_installed_html().encode(),
+            headers=[("content-type", "text/html")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_drupal_install_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = DRUPAL_INSTALL.run({}, _ctx(body=_drupal_root_html()))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert all("?" not in url.split(DRUPAL_INSTALL_PATH, 1)[-1]
+               or url.rstrip("/").endswith(DRUPAL_INSTALL_PATH)
+               for url in seen["urls"])
+    assert all(DRUPAL_INSTALL_PATH in url for url in seen["urls"])
+    assert all("langcode" not in url and "profile" not in url for url in seen["urls"])
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert DRUPAL_INSTALL_PATH in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "?" not in rows[-1]["url"].split(DRUPAL_INSTALL_PATH, 1)[-1]
+    assert "/update.php" not in rows[-1]["url"].lower()
+    assert "/core/rebuild.php" not in rows[-1]["url"].lower()
+    assert "/core/authorize.php" not in rows[-1]["url"].lower()
+
+
+def test_drupal_install_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://drupal.attacker.example/core/install.php"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_drupal_install_check_source_is_get_only_passive():
+    text = (
+        ROOT / "agents" / "cve_checks" / "drupal_install.py"
+    ).read_text(encoding="utf-8")
+    assert 'INSTALL = "/core/install.php"' in text
+    assert "fetch_path(ctx, INSTALL" in text
+    assert text.count("fetch_path(") == 1
+    assert "root_observation" in text
+    assert "from .commerce_core import is_drupal" in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "Never POSTs" in text or "never POSTs" in text or "Never POST" in text
+    assert "/update.php" in text
+    assert "/core/rebuild.php" in text
+    assert "/core/authorize.php" in text
+    assert "langcode" in text
+    assert DRUPAL_INSTALL.agent == "misconfig"
+    assert DRUPAL_INSTALL.cve == "CVE-2026-132165"
+    assert DRUPAL_INSTALL.id == "drupal-install"
+    assert "10.6.22" in DRUPAL_INSTALL.fixed
+    assert "11.3.22" in DRUPAL_INSTALL.fixed
+    assert "11.4.13" in DRUPAL_INSTALL.fixed
 
 # --- REDCap (CVE-2026-90817) ------------------------------------------------
 

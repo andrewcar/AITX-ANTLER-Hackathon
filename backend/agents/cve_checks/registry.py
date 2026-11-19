@@ -15,6 +15,7 @@ from . import (
     contact_form_7,
     craft_cms,
     dependency_files,
+    drupal_install,
     estatik,
     gpustack_auth,
     gravity_forms,
@@ -94,6 +95,7 @@ CHECKS: tuple[CveCheck, ...] = (
     confluence_axis.CHECK,
     mercury.CHECK,
     litellm_guardrail.CHECK,
+    drupal_install.CHECK,
     redcap.CHECK,
 )
 
