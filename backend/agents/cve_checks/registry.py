@@ -34,6 +34,7 @@ from . import (
     node_brotli,
     nodered,
     php2shell,
+    redcap,
     registration_form_woocommerce,
     slicewp,
     supabase_storage,
@@ -96,6 +97,7 @@ CHECKS: tuple[CveCheck, ...] = (
     mercury.CHECK,
     litellm_guardrail.CHECK,
     drupal_install.CHECK,
+    redcap.CHECK,
     apache_roller.CHECK,
 )
 

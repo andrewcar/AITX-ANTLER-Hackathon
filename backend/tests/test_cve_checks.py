@@ -64,6 +64,7 @@ from agents.cve_checks.litellm_guardrail import CHECK as LITELLM_GUARDRAIL
 from agents.cve_checks.litellm_guardrail import READINESS as LITELLM_READINESS
 from agents.cve_checks.drupal_install import CHECK as DRUPAL_INSTALL
 from agents.cve_checks.drupal_install import INSTALL as DRUPAL_INSTALL_PATH
+from agents.cve_checks.redcap import CHECK as REDCAP
 from agents.cve_checks.apache_roller import CHECK as APACHE_ROLLER
 import planner
 import main
@@ -180,6 +181,8 @@ BANNED = (
     "/update.php",
     "/core/rebuild.php",
     "/core/authorize.php",
+    "/surveys/",
+    "DataImport",
     "/roller-services/xmlrpc",
     "/roller/roller-services/xmlrpc",
 )
@@ -2691,22 +2694,23 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
     assert ids[-1] == "apache-roller"
-    assert ids[-2] == "drupal-install"
-    assert ids[-3] == "litellm-guardrail"
-    assert ids[-4] == "mercury"
-    assert ids[-5] == "confluence-axis"
-    assert ids[-6] == "ultra-addons-cf7"
-    assert ids[-7] == "estatik"
-    assert ids[-8] == "automatorwp-webhooks"
-    assert ids[-9] == "bricksforge"
+    assert ids[-2] == "redcap"
+    assert ids[-3] == "drupal-install"
+    assert ids[-4] == "litellm-guardrail"
+    assert ids[-5] == "mercury"
+    assert ids[-6] == "confluence-axis"
+    assert ids[-7] == "ultra-addons-cf7"
+    assert ids[-8] == "estatik"
+    assert ids[-9] == "automatorwp-webhooks"
+    assert ids[-10] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
-        "mercury", "litellm-guardrail", "drupal-install", "apache-roller",
+        "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
     ):
         assert required in ids
-    assert ids[-10] == "btcpay-server"
+    assert ids[-11] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2720,6 +2724,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert MERCURY.agent == "misconfig"
     assert LITELLM_GUARDRAIL.agent == "misconfig"
     assert DRUPAL_INSTALL.agent == "misconfig"
+    assert REDCAP.agent == "recon"
     assert APACHE_ROLLER.agent == "misconfig"
 
 
@@ -9238,6 +9243,179 @@ def test_drupal_install_check_source_is_get_only_passive():
     assert "10.6.22" in DRUPAL_INSTALL.fixed
     assert "11.3.22" in DRUPAL_INSTALL.fixed
     assert "11.4.13" in DRUPAL_INSTALL.fixed
+
+# --- REDCap (CVE-2026-90817) ------------------------------------------------
+
+_REDCAP_BANNED = (
+    "/surveys/",
+    "DataImport",
+    "/api/",
+    "Control Center",
+    "plugins/",
+    "redcap_v",
+    "login",
+    "s=",
+    "__passthru",
+    "route=",
+)
+
+
+def _redcap_html(version: str | None) -> str:
+    if version is None:
+        return (
+            "<html><head><title>Lab portal</title></head>"
+            "<body><p>No research capture here.</p></body></html>"
+        )
+    return (
+        "<html><head>"
+        f'<link rel="shortcut icon" href="/redcap_v{version}/Resources/images/favicon.ico">'
+        f'<script src="/redcap_v{version}/Resources/js/base.js"></script>'
+        "</head><body>"
+        f'<img src="/redcap_v{version}/Resources/images/logo.png" alt="REDCap">'
+        "</body></html>"
+    )
+
+
+def _assert_redcap_no_http(transport):
+    assert transport.calls == []
+    blob = " ".join(call[1] for call in transport.calls)
+    for banned in _REDCAP_BANNED:
+        assert banned not in blob
+    for banned in BANNED:
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("version,flagged", [
+    ("16.0.48", True),
+    ("16.0.49", False),
+    ("17.3.9", True),
+    ("17.3.10", False),
+    ("17.4.3", True),
+    ("17.4.4", False),
+    ("14.5.0", True),
+    ("13.2.9", False),
+    ("13.3.0", True),
+    ("16.1.0", True),
+    ("17.0.1", True),
+    ("17.5.3", False),
+])
+def test_redcap_version_matrix(monkeypatch, version, flagged):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = REDCAP.run({}, _ctx(body=_redcap_html(version)))
+    _assert_redcap_no_http(transport)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-90817" in found[0]["title"]
+        assert found[0]["check"]["match"] == f"redcap:{version}"
+        assert "CISA KEV" in found[0]["evidence"]
+        assert "public survey" in found[0]["evidence"].lower()
+        assert "exploit" not in found[0]["title"].lower()
+        assert "we exploit" not in found[0]["evidence"].lower()
+    else:
+        assert found == []
+
+
+def test_redcap_affected_helper_boundaries():
+    from agents.cve_checks.redcap import affected
+
+    assert affected((13, 2, 9)) is False
+    assert affected((13, 3, 0)) is True
+    assert affected((14, 5, 0)) is True
+    assert affected((16, 0, 48)) is True
+    assert affected((16, 0, 49)) is False
+    assert affected((16, 1, 0)) is True
+    assert affected((17, 3, 9)) is True
+    assert affected((17, 3, 10)) is False
+    assert affected((17, 4, 3)) is True
+    assert affected((17, 4, 4)) is False
+    assert affected((17, 5, 0)) is False
+
+
+def test_redcap_non_redcap_page_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes["/surveys/"] = {"status": 200, "body": "survey"}
+    transport.routes["/api/"] = {"status": 200, "body": "api"}
+    _install(monkeypatch, transport)
+    assert REDCAP.run({}, _ctx(body=_redcap_html(None))) == []
+    assert REDCAP.run({}, _ctx(body="<html><body>wordpress</body></html>")) == []
+    _assert_redcap_no_http(transport)
+
+
+def test_redcap_zero_http_opener_untouched(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("REDCap check must not issue HTTP")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    found = REDCAP.run({}, _ctx(body=_redcap_html("16.0.48")))
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "redcap:16.0.48"
+    assert REDCAP.run({}, _ctx(body=_redcap_html("16.0.49"))) == []
+    assert REDCAP.run({}, _ctx(body=_redcap_html(None))) == []
+
+
+def test_redcap_kill_switch_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester", run_id="run_redcap_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            # Zero-request check: opener stays untouched; stop yields no finding.
+            assert REDCAP.run({}, _ctx(body=_redcap_html(None))) == []
+            assert REDCAP.run({}, _ctx(body=_redcap_html("17.4.4"))) == []
+            assert REDCAP.run({}, _ctx(body=_redcap_html("16.0.48"))) == []
+    finally:
+        control.release(lease.run_id)
+
+
+def test_redcap_never_requests_forbidden_paths(monkeypatch):
+    transport = Transport()
+    for path in (
+        "/surveys/",
+        "/surveys/?s=ABCDEF",
+        "/DataImportController",
+        "/api/",
+        "/redcap_v16.0.48/",
+        "/plugins/",
+        "/login",
+    ):
+        transport.routes[path] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    found = REDCAP.run({}, _ctx(body=_redcap_html("17.4.3")))
+    _assert_redcap_no_http(transport)
+    assert found and found[0]["severity"] == "critical"
+    blob = " ".join(call[1] for call in transport.calls)
+    for banned in _REDCAP_BANNED:
+        assert banned not in blob
+
+
+def test_redcap_check_source_is_passive_fingerprint_only():
+    text = (ROOT / "agents" / "cve_checks" / "redcap.py").read_text(encoding="utf-8")
+    assert "root_observation" in text
+    assert "fetch_path" not in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "redcap_v" in text
+    assert "/surveys/" in text
+    assert "DataImport" in text
+    assert "CISA KEV" in text or "KEV" in text
+    assert REDCAP.agent == "recon"
+    assert REDCAP.cve == "CVE-2026-90817"
+    assert REDCAP.id == "redcap"
+    assert "16.0.49" in REDCAP.fixed
+    assert "17.3.10" in REDCAP.fixed
+    assert "17.4.4" in REDCAP.fixed
+    assert "Nothing" in REDCAP.sends or "No extra" in REDCAP.sends
+    assert "/surveys/" in REDCAP.does_not_send
 
 
 # --- Apache Roller (CVE-2026-129448) ----------------------------------------
