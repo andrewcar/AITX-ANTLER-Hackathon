@@ -35,6 +35,7 @@ from . import (
     node_brotli,
     nodered,
     php2shell,
+    php_nov2026,
     redcap,
     registration_form_woocommerce,
     slicewp,
@@ -100,6 +101,7 @@ CHECKS: tuple[CveCheck, ...] = (
     drupal_install.CHECK,
     redcap.CHECK,
     apache_roller.CHECK,
+    php_nov2026.CHECK,
     nginx2root.CHECK,
 )
 
