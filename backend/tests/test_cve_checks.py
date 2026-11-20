@@ -66,6 +66,7 @@ from agents.cve_checks.drupal_install import CHECK as DRUPAL_INSTALL
 from agents.cve_checks.drupal_install import INSTALL as DRUPAL_INSTALL_PATH
 from agents.cve_checks.redcap import CHECK as REDCAP
 from agents.cve_checks.apache_roller import CHECK as APACHE_ROLLER
+from agents.cve_checks.nginx2root import CHECK as NGINX2ROOT
 import planner
 import main
 import orchestrator
@@ -185,6 +186,10 @@ BANNED = (
     "DataImport",
     "/roller-services/xmlrpc",
     "/roller/roller-services/xmlrpc",
+    "WINDOW_UPDATE",
+    "SETTINGS",
+    "mail_auth_http",
+    "auth_http",
 )
 
 
@@ -2693,24 +2698,26 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "apache-roller"
-    assert ids[-2] == "redcap"
-    assert ids[-3] == "drupal-install"
-    assert ids[-4] == "litellm-guardrail"
-    assert ids[-5] == "mercury"
-    assert ids[-6] == "confluence-axis"
-    assert ids[-7] == "ultra-addons-cf7"
-    assert ids[-8] == "estatik"
-    assert ids[-9] == "automatorwp-webhooks"
-    assert ids[-10] == "bricksforge"
+    assert ids[-1] == "nginx2root"
+    assert ids[-2] == "apache-roller"
+    assert ids[-3] == "redcap"
+    assert ids[-4] == "drupal-install"
+    assert ids[-5] == "litellm-guardrail"
+    assert ids[-6] == "mercury"
+    assert ids[-7] == "confluence-axis"
+    assert ids[-8] == "ultra-addons-cf7"
+    assert ids[-9] == "estatik"
+    assert ids[-10] == "automatorwp-webhooks"
+    assert ids[-11] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
+        "nginx2root",
     ):
         assert required in ids
-    assert ids[-11] == "btcpay-server"
+    assert ids[-12] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2726,6 +2733,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert DRUPAL_INSTALL.agent == "misconfig"
     assert REDCAP.agent == "recon"
     assert APACHE_ROLLER.agent == "misconfig"
+    assert NGINX2ROOT.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -9679,3 +9687,182 @@ def test_apache_roller_affected_helper():
     assert affected((4, 0, 0)) is True
     assert affected((3, 1, 0)) is False
     assert affected((3, 1)) is False
+
+
+# --- NGINX nginx2root (CVE-2026-123007) -------------------------------------
+
+_NGINX2ROOT_BANNED = (
+    "WINDOW_UPDATE",
+    "SETTINGS",
+    "mail_auth_http",
+    "auth_http",
+)
+
+
+def _assert_nginx2root_passive(transport):
+    assert transport.calls == []
+    blob = " ".join(call[1] for call in transport.calls)
+    for banned in _NGINX2ROOT_BANNED:
+        assert banned not in blob
+    for banned in BANNED:
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("1.31.8", True),
+    ("1.30.6", True),
+    ("1.24.0", True),
+    ("1.30.7", False),
+    ("1.31.9", False),
+    ("1.9.4", False),
+])
+def test_nginx2root_version_matrix(monkeypatch, version, vulnerable):
+    transport = Transport()
+    for path in ("/WINDOW_UPDATE", "/SETTINGS", "/mail_auth_http"):
+        transport.routes[path] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    found = NGINX2ROOT.run({}, _ctx(headers={"server": f"nginx/{version}"}))
+    _assert_nginx2root_passive(transport)
+    if vulnerable:
+        assert len(found) == 1
+        assert found[0]["severity"] == "high"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-123007" in found[0]["title"]
+        assert found[0]["check"]["match"] == f"nginx2root:{version}"
+        assert "not listed in cisa kev" in found[0]["evidence"].lower()
+        assert "no confirmed in-the-wild" in found[0]["evidence"].lower()
+        assert "1.30.7" in found[0]["fix"]
+        assert "1.31.9" in found[0]["fix"]
+        assert "disable HTTP/2" in found[0]["fix"] or "disable http/2" in found[0]["fix"].lower()
+        assert "exploit" not in found[0]["title"].lower()
+        assert "we exploit" not in found[0]["evidence"].lower()
+    else:
+        assert found == []
+
+
+def test_nginx2root_1318_is_high_unconfirmed_and_passive(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = NGINX2ROOT.run({}, _ctx(headers={
+        "server": "nginx/1.31.8",
+        "alt-svc": 'h2=":443"; ma=3600',
+    }))
+    _assert_nginx2root_passive(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert UNCONFIRMED in found[0]["title"]
+    assert found[0]["check"]["match"] == "nginx2root:1.31.8"
+    assert "HTTP/2" in found[0]["evidence"] or "h2" in found[0]["evidence"].lower()
+    assert "CVE-2026-123633" in found[0]["evidence"]
+    assert "Rapid7" in found[0]["evidence"]
+    assert "37.0.8.1" in found[0]["fix"]
+
+
+def test_nginx2root_absent_apache_openresty_send_nothing(monkeypatch):
+    transport = Transport()
+    for path in _NGINX2ROOT_BANNED:
+        transport.routes[f"/{path}"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    assert NGINX2ROOT.run({}, _ctx(headers={"server": "nginx"})) == []
+    assert NGINX2ROOT.run({}, _ctx(server="nginx")) == []
+    assert NGINX2ROOT.run({}, _ctx(headers={"server": "Apache/2.4.71"})) == []
+    assert NGINX2ROOT.run({}, _ctx(headers={"server": "openresty/1.27.1.2"})) == []
+    assert NGINX2ROOT.run({}, _ctx(headers={
+        "server": "openresty/1.27.1.2",
+        "alt-svc": 'h2=":443"',
+    })) == []
+    assert NGINX2ROOT.run({}, _ctx(headers={"server": "Tengine/2.3.3"})) == []
+    assert transport.calls == []
+
+
+def test_nginx2root_never_requests_forbidden_paths(monkeypatch):
+    transport = Transport()
+    for path in (
+        "/WINDOW_UPDATE",
+        "/SETTINGS",
+        "/mail_auth_http",
+        "/auth_http",
+    ):
+        transport.routes[path] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    NGINX2ROOT.run({}, _ctx(headers={"server": "nginx/1.31.8"}))
+    _assert_nginx2root_passive(transport)
+    blob = " ".join(call[1] for call in transport.calls)
+    for banned in _NGINX2ROOT_BANNED:
+        assert banned not in blob
+
+
+def test_nginx2root_kill_switch_makes_no_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch / nginx2root check must not open a socket")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_nginx2root_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            found = NGINX2ROOT.run({}, _ctx(headers={"server": "nginx/1.30.6"}))
+    finally:
+        control.release(lease.run_id)
+    # Passive header reuse: no outbound request, so kill switch never trips.
+    assert found and found[0]["severity"] == "high"
+
+
+def test_nginx2root_get_only_and_audited_when_transport_used(monkeypatch):
+    """Zero-request check: no GETs, so audit stays quiet for this check alone."""
+    transport = Transport()
+    _install(monkeypatch, transport)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_nginx2root_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = NGINX2ROOT.run({}, _ctx(headers={"server": "nginx/1.24.0"}))
+    finally:
+        control.release(lease.run_id)
+    assert transport.calls == []
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "high"
+    import audit
+    rows = [
+        row for row in audit.recent(20)
+        if row["kind"] == "request" and row.get("run_id") == "run_nginx2root_audit"
+    ]
+    assert rows == []
+
+
+def test_nginx2root_check_source_is_passive_fingerprint_only():
+    from agents.cve_checks.nginx2root import affected
+
+    text = (ROOT / "agents" / "cve_checks" / "nginx2root.py").read_text(
+        encoding="utf-8",
+    )
+    assert "root_observation" in text
+    assert "fetch_path" not in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "import socket" not in text
+    assert "parse_dotted" in text
+    assert "WINDOW_UPDATE" in text
+    assert "SETTINGS" in text
+    assert "mail" in text.lower()
+    assert "CISA KEV" in text or "KEV" in text
+    assert NGINX2ROOT.agent == "misconfig"
+    assert NGINX2ROOT.cve == "CVE-2026-123007"
+    assert NGINX2ROOT.id == "nginx2root"
+    assert "1.30.7" in NGINX2ROOT.fixed
+    assert "1.31.9" in NGINX2ROOT.fixed
+    assert "No extra request" in NGINX2ROOT.sends
+    assert "WINDOW_UPDATE" in NGINX2ROOT.does_not_send
+    assert affected((1, 31, 8)) is True
+    assert affected((1, 30, 6)) is True
+    assert affected((1, 24, 0)) is True
+    assert affected((1, 30, 7)) is False
+    assert affected((1, 31, 9)) is False
+    assert affected((1, 9, 4)) is False
+    assert affected((1, 9, 5)) is True

@@ -30,6 +30,7 @@ from . import (
     mlflow_gateway,
     nextjs,
     nextjs_nov2026,
+    nginx2root,
     ninja_forms_uploads,
     node_brotli,
     nodered,
@@ -99,6 +100,7 @@ CHECKS: tuple[CveCheck, ...] = (
     drupal_install.CHECK,
     redcap.CHECK,
     apache_roller.CHECK,
+    nginx2root.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
