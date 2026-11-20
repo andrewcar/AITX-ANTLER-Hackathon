@@ -12,7 +12,7 @@ import control
 import recon
 import reporter
 import verifier
-from agents.cve_checks import CHECKS, php2shell, pins
+from agents.cve_checks import CHECKS, php2shell, php_nov2026, pins
 from agents.cve_checks.dependency_files import FILES
 from agents.cve_checks.magento import CHECK as MAGENTO
 from agents.cve_checks.metabase import CHECK as METABASE
@@ -66,6 +66,7 @@ from agents.cve_checks.drupal_install import CHECK as DRUPAL_INSTALL
 from agents.cve_checks.drupal_install import INSTALL as DRUPAL_INSTALL_PATH
 from agents.cve_checks.redcap import CHECK as REDCAP
 from agents.cve_checks.apache_roller import CHECK as APACHE_ROLLER
+from agents.cve_checks.php_nov2026 import CHECK as PHP_NOV2026
 import planner
 import main
 import orchestrator
@@ -185,6 +186,11 @@ BANNED = (
     "DataImport",
     "/roller-services/xmlrpc",
     "/roller/roller-services/xmlrpc",
+    "PHP_SESSION_UPLOAD_PROGRESS",
+    "upload_progress",
+    "phar://",
+    "fcgi://",
+    "fastcgi://",
 )
 
 
@@ -2693,24 +2699,26 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "apache-roller"
-    assert ids[-2] == "redcap"
-    assert ids[-3] == "drupal-install"
-    assert ids[-4] == "litellm-guardrail"
-    assert ids[-5] == "mercury"
-    assert ids[-6] == "confluence-axis"
-    assert ids[-7] == "ultra-addons-cf7"
-    assert ids[-8] == "estatik"
-    assert ids[-9] == "automatorwp-webhooks"
-    assert ids[-10] == "bricksforge"
+    assert ids[-1] == "php-nov2026"
+    assert ids[-2] == "apache-roller"
+    assert ids[-3] == "redcap"
+    assert ids[-4] == "drupal-install"
+    assert ids[-5] == "litellm-guardrail"
+    assert ids[-6] == "mercury"
+    assert ids[-7] == "confluence-axis"
+    assert ids[-8] == "ultra-addons-cf7"
+    assert ids[-9] == "estatik"
+    assert ids[-10] == "automatorwp-webhooks"
+    assert ids[-11] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
+        "php-nov2026",
     ):
         assert required in ids
-    assert ids[-11] == "btcpay-server"
+    assert ids[-12] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2726,6 +2734,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert DRUPAL_INSTALL.agent == "misconfig"
     assert REDCAP.agent == "recon"
     assert APACHE_ROLLER.agent == "misconfig"
+    assert PHP_NOV2026.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -9679,3 +9688,286 @@ def test_apache_roller_affected_helper():
     assert affected((4, 0, 0)) is True
     assert affected((3, 1, 0)) is False
     assert affected((3, 1)) is False
+
+
+# --- PHP November 2026 (CVE-2026-129289 family) ------------------------------
+
+_PHP_NOV_BANNED = (
+    "phpinfo",
+    "PHP_SESSION_UPLOAD_PROGRESS",
+    "upload_progress",
+    "phar://",
+    "fcgi://",
+    "fastcgi://",
+)
+
+
+def _assert_php_nov_passive(transport):
+    assert transport.calls == []
+    blob = " ".join(call[1] for call in transport.calls)
+    for banned in _PHP_NOV_BANNED:
+        assert banned not in blob
+    for banned in BANNED:
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("version,flagged", [
+    ("8.4.27", True),
+    ("8.4.28", False),
+    ("8.5.12", True),
+    ("8.5.13", False),
+    ("8.3.36", True),
+    ("8.2.36", False),
+    ("8.1.31", True),
+    ("8.6.0", False),
+    ("8.3.37", False),
+    ("8.2.35", True),
+    ("7.4.33", True),
+])
+def test_php_nov2026_version_matrix(monkeypatch, version, flagged):
+    transport = Transport()
+    transport.routes["/phpinfo.php"] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    found = PHP_NOV2026.run({}, _ctx(headers={"x-powered-by": f"PHP/{version}"}))
+    _assert_php_nov_passive(transport)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "high"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-129289" in found[0]["title"]
+        assert found[0]["check"]["match"] == f"php-nov2026:{version}"
+        assert "CVE-2026-115560" in found[0]["evidence"]
+        assert "CVE-2026-126714" in found[0]["evidence"]
+        assert "config-dependent" in found[0]["evidence"].lower()
+        assert (
+            "not in cisa kev" in found[0]["evidence"].lower()
+            or "not listed in cisa kev" in found[0]["evidence"].lower()
+        )
+        assert "session.upload_progress.enabled=0" in found[0]["fix"]
+        assert "8.5.13" in found[0]["fix"]
+        assert "exploit" not in found[0]["title"].lower()
+        assert "exploits" not in found[0]["evidence"].lower().replace(
+            "exploitation", ""
+        )
+    else:
+        assert found == []
+
+
+def test_php_nov2026_no_php_header_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes["/phpinfo.php"] = {"status": 200, "body": "x"}
+    _install(monkeypatch, transport)
+    assert PHP_NOV2026.run({}, _ctx()) == []
+    assert PHP_NOV2026.run({}, _ctx(headers={"server": "nginx"})) == []
+    assert PHP_NOV2026.run({}, _ctx(body="<html>hello</html>")) == []
+    _assert_php_nov_passive(transport)
+
+
+def test_php_nov2026_zero_extra_http_requests(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    found = PHP_NOV2026.run({}, _ctx(headers={"x-powered-by": "PHP/8.4.27"}))
+    assert transport.calls == []
+    assert found and found[0]["severity"] == "high"
+    assert PHP_NOV2026.run({}, _ctx(headers={"x-powered-by": "PHP/8.4.28"})) == []
+    assert transport.calls == []
+
+
+def test_php_nov2026_reuses_php2shell_observe_and_leaves_php2shell_unchanged(
+    monkeypatch,
+):
+    """Sibling floors differ; php2shell findings/floors stay the same."""
+    transport = Transport()
+    _install(monkeypatch, transport)
+    # 8.5.12: fixed for php2shell (floor 8.5.12), still flagged for nov2026 (8.5.13).
+    ctx_shared = _ctx(headers={"x-powered-by": "PHP/8.5.12"})
+    php2 = php2shell.run({}, ctx_shared)
+    nov = PHP_NOV2026.run({}, ctx_shared)
+    assert php2 == []
+    assert len(nov) == 1 and nov[0]["severity"] == "high"
+    # 8.2.34: vulnerable for php2shell (floor 8.2.35) and for nov2026 (floor 8.2.36).
+    ctx_old = _ctx(headers={"x-powered-by": "PHP/8.2.34"})
+    php2_old = php2shell.run({}, ctx_old)
+    nov_old = PHP_NOV2026.run({}, ctx_old)
+    assert php2_old and php2_old[0]["severity"] == "critical"
+    assert "CVE-2026-109618" in php2_old[0]["evidence"]
+    assert "8.2.35" in php2_old[0]["evidence"]
+    assert nov_old and nov_old[0]["severity"] == "high"
+    assert "CVE-2026-129289" in nov_old[0]["evidence"]
+    # 8.2.35: fixed for php2shell, still flagged for nov2026.
+    ctx_mid = _ctx(headers={"x-powered-by": "PHP/8.2.35"})
+    assert php2shell.run({}, ctx_mid) == []
+    mid = PHP_NOV2026.run({}, ctx_mid)
+    assert mid and mid[0]["severity"] == "high"
+    # 8.2.36: fixed for both.
+    ctx_fixed = _ctx(headers={"x-powered-by": "PHP/8.2.36"})
+    assert php2shell.run({}, ctx_fixed) == []
+    assert PHP_NOV2026.run({}, ctx_fixed) == []
+    body_hit = php2shell.run({}, _ctx(body="banner PHP/8.1.2"))
+    assert body_hit and "EOL" in body_hit[0]["evidence"]
+    assert transport.calls == []
+
+
+def test_php_nov2026_php2shell_passive_regression(monkeypatch):
+    """Explicit: php2shell results unchanged for the same inputs."""
+    transport = Transport()
+    _install(monkeypatch, transport)
+    target = _ctx(headers={"x-powered-by": "PHP/8.2.34"})
+    found = php2shell.run({}, target)
+    assert transport.calls == []
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-109618" in found[0]["evidence"]
+    assert "8.2.35" in found[0]["evidence"]
+    assert php2shell.run({}, _ctx(headers={"x-powered-by": "PHP/8.2.35"})) == []
+    body_hit = php2shell.run({}, _ctx(body="banner PHP/8.1.2"))
+    assert body_hit and "EOL" in body_hit[0]["evidence"]
+
+
+def test_php_nov2026_server_header_and_body_token(monkeypatch):
+    transport = Transport()
+    _install(monkeypatch, transport)
+    server_hit = PHP_NOV2026.run({}, _ctx(headers={"server": "PHP/8.3.36"}))
+    assert server_hit and "server header" in server_hit[0]["evidence"]
+    body_hit = PHP_NOV2026.run({}, _ctx(body="powered by PHP/8.1.31"))
+    assert body_hit and "EOL" in body_hit[0]["evidence"]
+    assert "8.1" in body_hit[0]["evidence"]
+    _assert_php_nov_passive(transport)
+
+
+def test_php_nov2026_soft_404_catch_all_without_php_token_is_none(monkeypatch):
+    transport = Transport()
+    transport.routes["/"] = {"status": 200, "body": "<html>Not Found</html>"}
+    transport.routes["/phpinfo.php"] = {
+        "status": 200,
+        "body": "<html>soft 404 homepage</html>",
+    }
+    _install(monkeypatch, transport)
+    assert PHP_NOV2026.run(
+        {},
+        _ctx(headers={"content-type": "text/html"}, body="<html>Not Found</html>"),
+    ) == []
+    _assert_php_nov_passive(transport)
+
+
+def test_php_nov2026_kill_switch_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch / php-nov2026 must not open a socket")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_php_nov2026_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            assert PHP_NOV2026.run(
+                {}, _ctx(headers={"x-powered-by": "PHP/8.4.27"})
+            ) == []
+            assert PHP_NOV2026.run(
+                {}, _ctx(headers={"x-powered-by": "PHP/8.4.28"})
+            ) == []
+            assert PHP_NOV2026.run({}, _ctx()) == []
+    finally:
+        control.release(lease.run_id)
+
+
+def test_php_nov2026_get_only_and_audited_when_transport_used(monkeypatch):
+    """Zero-request check: no GETs, so audit stays quiet for this check alone."""
+    transport = Transport()
+    _install(monkeypatch, transport)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_php_nov2026_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = PHP_NOV2026.run(
+                {}, _ctx(headers={"x-powered-by": "PHP/8.5.12"})
+            )
+    finally:
+        control.release(lease.run_id)
+    assert transport.calls == []
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert found and found[0]["severity"] == "high"
+    import audit
+    rows = [
+        row for row in audit.recent(20)
+        if row["kind"] == "request" and row.get("run_id") == "run_php_nov2026_audit"
+    ]
+    assert rows == []
+
+
+def test_php_nov2026_never_requests_forbidden_paths(monkeypatch):
+    transport = Transport()
+    for path in (
+        "/phpinfo.php",
+        "/phpinfo",
+        "/info.php",
+        "/.well-known/phpinfo",
+    ):
+        transport.routes[path] = {"status": 200, "body": "nope"}
+    _install(monkeypatch, transport)
+    found = PHP_NOV2026.run({}, _ctx(headers={"x-powered-by": "PHP/8.4.27"}))
+    _assert_php_nov_passive(transport)
+    assert found and found[0]["severity"] == "high"
+    paths = [call[1] for call in transport.calls]
+    blob = " ".join(paths)
+    for banned in _PHP_NOV_BANNED:
+        assert banned not in blob
+
+
+def test_php_nov2026_check_source_is_passive_only():
+    text = (
+        ROOT / "agents" / "cve_checks" / "php_nov2026.py"
+    ).read_text(encoding="utf-8")
+    assert "root_observation" in text
+    assert "from .php2shell import observe" in text
+    assert "fetch_path" not in text
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "control.stopped" in text
+    assert "session.upload_progress" in text
+    assert "CVE-2026-129289" in text
+    assert PHP_NOV2026.agent == "misconfig"
+    assert "CVE-2026-129289" in PHP_NOV2026.cve
+    assert PHP_NOV2026.id == "php-nov2026"
+    assert "8.5.13" in PHP_NOV2026.fixed
+    assert "8.6.0" in PHP_NOV2026.fixed
+    assert "No extra request" in PHP_NOV2026.sends
+    assert "phpinfo" in PHP_NOV2026.does_not_send.lower()
+    assert "upload-progress" in PHP_NOV2026.does_not_send.lower()
+
+
+def test_php_nov2026_classify_helper():
+    assert bool(php_nov2026.classify((8, 4, 27))) is True
+    assert bool(php_nov2026.classify((8, 4, 28))) is False
+    assert bool(php_nov2026.classify((8, 5, 12))) is True
+    assert bool(php_nov2026.classify((8, 5, 13))) is False
+    assert bool(php_nov2026.classify((8, 3, 36))) is True
+    assert bool(php_nov2026.classify((8, 2, 36))) is False
+    assert bool(php_nov2026.classify((8, 1, 31))) is True
+    assert bool(php_nov2026.classify((8, 6, 0))) is False
+    assert bool(php_nov2026.classify((8, 7, 0))) is False
+
+
+def test_verifier_confirms_php_nov2026_then_rejects_a_fixed_build():
+    found = PHP_NOV2026.run({}, _ctx(headers={"x-powered-by": "PHP/8.4.27"}))[0]
+    fresh = {
+        "url": "http://127.0.0.1:8081",
+        "raw_headers": {"x-powered-by": "PHP/8.4.27"},
+        "body_snippet": "",
+        "server": "",
+    }
+    ok, verdict, _note = verifier._verify_deterministic(
+        found, fresh, fresh["raw_headers"], [], fresh["url"], None,
+    )
+    assert ok and verdict == "confirmed"
+    fresh["raw_headers"] = {"x-powered-by": "PHP/8.4.28"}
+    ok, verdict, _note = verifier._verify_deterministic(
+        found, fresh, fresh["raw_headers"], [], fresh["url"], None,
+    )
+    assert not ok and verdict == "rejected"
