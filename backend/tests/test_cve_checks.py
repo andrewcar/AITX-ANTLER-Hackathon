@@ -10156,3 +10156,70 @@ def test_nginx2root_check_source_is_passive_fingerprint_only():
     assert affected((1, 31, 9)) is False
     assert affected((1, 9, 4)) is False
     assert affected((1, 9, 5)) is True
+
+
+# --- Flowise MCP token (CVE-2026-130796) ------------------------------------
+
+from agents.cve_checks.flowise_mcp_token import CHECK as FLOWISE_MCP
+
+
+def _flowise_run(monkeypatch, body, status=200):
+    transport = Transport()
+    transport.routes["/api/v1/version"] = {
+        "status": status, "content_type": "application/json", "body": body,
+    }
+    _install(monkeypatch, transport)
+    return transport, FLOWISE_MCP.run({}, _ctx())
+
+
+@pytest.mark.parametrize("version,hit", [
+    ("3.1.2", False), ("3.1.3", True), ("3.1.4", True), ("v3.1.4", True),
+    ("3.1.5", False), ("3.0.13", False), ("2.2.7", False), ("3.2.0", False),
+])
+def test_flowise_mcp_token_version_matrix(monkeypatch, version, hit):
+    transport, found = _flowise_run(monkeypatch, json.dumps({"version": version}))
+    assert [call[1] for call in transport.calls] == ["/api/v1/version"]
+    assert all(call[0] == "GET" for call in transport.calls)
+    assert bool(found) is hit
+    if hit:
+        assert found[0]["severity"] == "high"
+        assert UNCONFIRMED in found[0]["title"]
+        assert "CVE-2026-130796" in found[0]["evidence"]
+        assert found[0]["check"]["match"] == f"flowise-mcp-token:{version.lstrip('v')}"
+
+
+@pytest.mark.parametrize("body,status", [
+    ("not json", 200), ("[]", 200), ('{"version": "3.1.4"}', 404),
+    ('{"version": "3.1.4", "a": 1, "b": 2, "c": 3}', 200), ('{"name": "x"}', 200),
+    ('{"version": ""}', 200),
+])
+def test_flowise_mcp_token_ignores_other_bodies(monkeypatch, body, status):
+    _transport, found = _flowise_run(monkeypatch, body, status)
+    assert found == []
+
+
+def test_flowise_mcp_token_never_touches_chatflow_or_mcp_routes():
+    text = (ROOT / "agents" / "cve_checks" / "flowise_mcp_token.py").read_text(encoding="utf-8")
+    code = text.split('"""', 2)[2].split("CHECK = CveCheck(")[0]
+    assert "fetch_path(ctx, VERSION" in code
+    assert "public-chatflows" not in code
+    assert "/mcp/" not in code
+    assert "post" not in code.lower().replace("postgres", "")
+
+
+def test_flowise_mcp_token_is_registered_and_verifier_rechecks(monkeypatch):
+    assert "flowise-mcp-token" in [check.id for check in CHECKS]
+    assert FLOWISE_MCP.agent == "secrets"
+    _t, found = _flowise_run(monkeypatch, '{"version":"3.1.4"}')
+    chk = found[0]["check"]
+    transport = Transport()
+    transport.routes["/api/v1/version"] = {
+        "status": 200, "content_type": "application/json", "body": '{"version":"3.1.4"}',
+    }
+    _install(monkeypatch, transport)
+    from agents.cve_checks import registry
+    ok, status, _why = registry.verify_finding(chk, "http://127.0.0.1:8081", None, {})
+    assert (ok, status) == (True, "confirmed")
+    transport.routes["/api/v1/version"]["body"] = '{"version":"3.1.5"}'
+    ok, status, _why = registry.verify_finding(chk, "http://127.0.0.1:8081", None, {})
+    assert (ok, status) == (False, "rejected")
