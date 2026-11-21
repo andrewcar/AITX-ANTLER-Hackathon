@@ -196,6 +196,7 @@ BANNED = (
     "SETTINGS",
     "mail_auth_http",
     "auth_http",
+    "/datastore",
 )
 
 
@@ -2704,27 +2705,28 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "nginx2root"
-    assert ids[-2] == "php-nov2026"
-    assert ids[-3] == "apache-roller"
-    assert ids[-4] == "redcap"
-    assert ids[-5] == "drupal-install"
-    assert ids[-6] == "litellm-guardrail"
-    assert ids[-7] == "mercury"
-    assert ids[-8] == "confluence-axis"
-    assert ids[-9] == "ultra-addons-cf7"
-    assert ids[-10] == "estatik"
-    assert ids[-11] == "automatorwp-webhooks"
-    assert ids[-12] == "bricksforge"
+    assert ids[-1] == "monai-label"
+    assert ids[-2] == "nginx2root"
+    assert ids[-3] == "php-nov2026"
+    assert ids[-4] == "apache-roller"
+    assert ids[-5] == "redcap"
+    assert ids[-6] == "drupal-install"
+    assert ids[-7] == "litellm-guardrail"
+    assert ids[-8] == "mercury"
+    assert ids[-9] == "confluence-axis"
+    assert ids[-10] == "ultra-addons-cf7"
+    assert ids[-11] == "estatik"
+    assert ids[-12] == "automatorwp-webhooks"
+    assert ids[-13] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
-        "php-nov2026", "nginx2root",
+        "php-nov2026", "nginx2root", "monai-label",
     ):
         assert required in ids
-    assert ids[-13] == "btcpay-server"
+    assert ids[-14] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -10156,3 +10158,220 @@ def test_nginx2root_check_source_is_passive_fingerprint_only():
     assert affected((1, 31, 9)) is False
     assert affected((1, 9, 4)) is False
     assert affected((1, 9, 5)) is True
+
+
+# --- MONAI Label datastore path traversal (CVE-2026-133968) -----------------
+
+from agents.cve_checks import monai_label
+from agents.cve_checks.monai_label import CHECK as MONAI_LABEL
+
+
+def _monai_info(name="MONAILabel - Radiology (0.8.5)", version="0.8.5"):
+    return json.dumps({
+        "name": name,
+        "description": "Active Learning solution for radiology",
+        "version": version,
+        "labels": ["spleen", "liver"],
+        "models": {"segmentation": {"type": "segmentation"}},
+        "trainers": {"segmentation": {}},
+        "strategies": {"random": {}},
+        "scoring": {},
+        "train_stats": {},
+        "datastore": {"total": 41, "completed": 3, "label_tags": {"final": 3}},
+    })
+
+
+_MONAI_AUTH_ON = json.dumps({
+    "enabled": True, "client_id": "monailabel-app", "realm": "http://kc/realms/monailabel",
+})
+
+
+def _monai_run(monkeypatch, info=None, info_status=200, auth=None, auth_status=200,
+               openapi=None, openapi_status=200):
+    transport = Transport()
+    if info is not None or info_status != 200:
+        transport.routes["/info/"] = {
+            "status": info_status, "content_type": "application/json", "body": info or "",
+        }
+    if auth is not None:
+        transport.routes["/auth/"] = {
+            "status": auth_status, "content_type": "application/json", "body": auth,
+        }
+    if openapi is not None:
+        transport.routes["/openapi.json"] = {
+            "status": openapi_status, "content_type": "application/json", "body": openapi,
+        }
+    _install(monkeypatch, transport)
+    return transport, MONAI_LABEL.run({}, _ctx())
+
+
+@pytest.mark.parametrize("name,version,expected", [
+    ("MONAILabel - Radiology (0.8.5)", "0.8.5", (0, 8, 5)),
+    ("MONAILabel - Pathology (0.8.4)", "0.8.4", (0, 8, 4)),
+    ("MONAILabel - Zoo/Bundle (0.7.0rc3)", "0.7.0rc3", (0, 7, 0)),
+    ("MONAILabel - Radiology (0.8.5+12.gabc1234)", "0.8.5+12.gabc1234", (0, 8, 5)),
+    ("MONAI Label custom", "v0.8.2", (0, 8, 2)),
+    ("My Hospital Segmenter", "2.0", None),
+    ("", "0.8.5", None),
+])
+def test_monai_label_version_parsing(name, version, expected):
+    assert monai_label.info_version(_monai_info(name, version)) == expected
+
+
+def test_monai_label_affected_range():
+    assert monai_label.affected((0, 8, 5)) is True
+    assert monai_label.affected((0, 1)) is True
+    assert monai_label.affected((0, 8, 6)) is False
+    assert monai_label.affected((0, 9, 0)) is False
+    assert monai_label.affected((1, 0)) is False
+
+
+@pytest.mark.parametrize("name,version,label", [
+    ("MONAILabel - Radiology (0.8.5)", "0.8.5", "0.8.5"),
+    ("MONAILabel - Endoscopy (0.8.1)", "0.8.1", "0.8.1"),
+    ("MONAILabel - Radiology (0.5.2)", "0.5.2", "0.5.2"),
+])
+def test_monai_label_auth_off_vulnerable_version_is_critical(monkeypatch, name, version, label):
+    transport, found = _monai_run(monkeypatch, info=_monai_info(name, version))
+    assert [call[1] for call in transport.calls] == ["/info/"]
+    assert len(found) == 1
+    item = found[0]
+    assert item["severity"] == "critical"
+    assert UNCONFIRMED in item["title"]
+    assert "CVE-2026-133968" in item["title"]
+    assert "auth disabled" in item["title"]
+    assert "no fixed release exists yet" in item["evidence"]
+    assert "No fixed MONAI Label release exists yet" in item["fix"]
+    assert "PR #1915" in item["fix"]
+    assert item["check"] == {
+        "type": "cve", "id": "monai-label", "match": f"monai-label:{label}:auth-off",
+    }
+
+
+def test_monai_label_auth_off_hidden_version_is_critical(monkeypatch):
+    _t, found = _monai_run(monkeypatch, info=_monai_info("Spleen Annotator", "2.0"))
+    assert [item["severity"] for item in found] == ["critical"]
+    assert "version hidden" in found[0]["title"]
+    assert found[0]["check"]["match"] == "monai-label:unknown:auth-off"
+
+
+def test_monai_label_newer_version_is_info_note(monkeypatch):
+    transport, found = _monai_run(
+        monkeypatch, info=_monai_info("MONAILabel - Radiology (0.8.6)", "0.8.6"),
+    )
+    assert [call[1] for call in transport.calls] == ["/info/"]
+    assert [item["severity"] for item in found] == ["info"]
+    assert "PR #1915" in found[0]["title"]
+    assert UNCONFIRMED not in found[0]["title"]
+    assert found[0]["check"]["match"] == "monai-label:0.8.6:newer"
+
+
+def test_monai_label_auth_on_via_auth_endpoint_is_high(monkeypatch):
+    transport, found = _monai_run(
+        monkeypatch, info='{"detail":"Not authenticated"}', info_status=401,
+        auth=_MONAI_AUTH_ON,
+    )
+    assert [call[1] for call in transport.calls] == ["/info/", "/auth/"]
+    assert [item["severity"] for item in found] == ["high"]
+    assert "auth enabled" in found[0]["title"]
+    assert "ANNOTATOR" in found[0]["title"]
+    assert "no fixed release exists yet" in found[0]["evidence"]
+    assert found[0]["check"]["match"] == "monai-label:unknown:auth-on"
+
+
+def test_monai_label_auth_on_via_openapi_fallback_is_high(monkeypatch):
+    spec = json.dumps({
+        "openapi": "3.1.0",
+        "info": {"title": "MONAILabel", "version": "0.1.0"},
+        "paths": {"/auth/": {}, "/auth/token": {}, "/info/": {}, "/datastore/image": {}},
+    })
+    transport, found = _monai_run(
+        monkeypatch, info="", info_status=403, auth="", auth_status=404, openapi=spec,
+    )
+    assert [call[1] for call in transport.calls] == ["/info/", "/auth/", "/openapi.json"]
+    assert [item["severity"] for item in found] == ["high"]
+    assert "/auth/ routes mounted" in found[0]["evidence"]
+
+
+def test_monai_label_openapi_paths_without_title(monkeypatch):
+    spec = json.dumps({
+        "info": {"title": "Radiology AI", "version": "0.1.0"},
+        "paths": {"/info/": {}, "/datastore/image": {}},
+    })
+    assert monai_label.openapi_fingerprint(spec) == (True, False)
+    assert monai_label.openapi_fingerprint('{"info":{"title":"Other API"},"paths":{"/info/":{}}}') == (False, False)
+
+
+@pytest.mark.parametrize("auth_body", [
+    json.dumps({"enabled": False, "client_id": "x", "realm": "y"}),
+    json.dumps({"enabled": True}),
+    "not json",
+])
+def test_monai_label_gated_info_without_monai_marker_is_quiet(monkeypatch, auth_body):
+    transport, found = _monai_run(
+        monkeypatch, info="", info_status=401, auth=auth_body,
+        openapi='{"info":{"title":"Some Other API"},"paths":{"/info/":{}}}',
+    )
+    assert found == []
+    assert len(transport.calls) <= 3
+
+
+@pytest.mark.parametrize("body,status", [
+    ('{"name":"x","version":"1.0"}', 200),
+    ("<html>info</html>", 200),
+    ("[]", 200),
+    (_monai_info(), 404),
+    (_monai_info(), 500),
+    (json.dumps({**json.loads(_monai_info()), "datastore": "local"}), 200),
+])
+def test_monai_label_non_monai_target_yields_nothing(monkeypatch, body, status):
+    transport, found = _monai_run(monkeypatch, info=body, info_status=status)
+    assert found == []
+    # Only a 401/403 on /info/ earns a second request.
+    assert [call[1] for call in transport.calls] == ["/info/"]
+
+
+def test_monai_label_only_gets_and_never_touches_datastore(monkeypatch):
+    scenarios = [
+        dict(info=_monai_info()),
+        dict(info=_monai_info("MONAILabel - Radiology (0.9.0)", "0.9.0")),
+        dict(info="", info_status=401, auth=_MONAI_AUTH_ON),
+        dict(info="", info_status=401, auth="", auth_status=404,
+             openapi='{"info":{"title":"MONAILabel"},"paths":{"/datastore/image":{}}}'),
+        dict(info="", info_status=404),
+    ]
+    for kwargs in scenarios:
+        transport, _found = _monai_run(monkeypatch, **kwargs)
+        assert transport.calls
+        assert len(transport.calls) <= 3
+        for method, path, session, follow in transport.calls:
+            assert method == "GET"
+            assert session is None and follow is False
+            assert path in ("/info/", "/auth/", "/openapi.json")
+            assert "datastore" not in path
+            assert ".." not in path and "%2e" not in path.lower()
+            assert "/train" not in path and "/infer" not in path
+    text = (ROOT / "agents" / "cve_checks" / "monai_label.py").read_text(encoding="utf-8")
+    code = text.split('"""', 2)[2].split("CHECK = CveCheck(")[0]
+    assert "post_brotli_json" not in code
+    assert "recon." not in code
+    calls = re.findall(r"fetch_path\(ctx, (\w+)", code)
+    assert sorted(set(calls)) == ["AUTH", "INFO", "OPENAPI"]
+
+
+def test_monai_label_is_registered_and_verifier_rechecks(monkeypatch):
+    assert "monai-label" in [check.id for check in CHECKS]
+    assert MONAI_LABEL.agent == "misconfig"
+    _t, found = _monai_run(monkeypatch, info=_monai_info())
+    chk = found[0]["check"]
+    transport = Transport()
+    transport.routes["/info/"] = {
+        "status": 200, "content_type": "application/json", "body": _monai_info(),
+    }
+    _install(monkeypatch, transport)
+    from agents.cve_checks import registry
+    ok, status, _why = registry.verify_finding(chk, "http://127.0.0.1:8081", None, {})
+    assert (ok, status) == (True, "confirmed")
+    transport.routes["/info/"] = {"status": 401, "body": ""}
+    ok, status, _why = registry.verify_finding(chk, "http://127.0.0.1:8081", None, {})
+    assert (ok, status) == (False, "rejected")
