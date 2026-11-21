@@ -3,8 +3,8 @@
 Same bug as CVE-2026-82384. Roller 4.0.0 through 6.1.5 deserialize XML-RPC
 vendor extension types before authenticating at ``/roller-services/xmlrpc``
 (or ``/roller/roller-services/xmlrpc``). Fixed in 6.1.6. CVSS 9.8. Apache
-reports active exploitation (ASF / oss-security 2026-11-17); not listed in
-CISA KEV as of 2026-11-19. Disabling XML-RPC in the admin UI is not enough on
+reports active exploitation (ASF / oss-security 2026-11-17); CISA added it
+to KEV on 2026-11-20. Disabling XML-RPC in the admin UI is not enough on
 older versions; mitigation is ``enabledForExtensions=false`` in
 ``WEB-INF/web.xml`` or removing the servlet mapping.
 
@@ -36,6 +36,8 @@ _SOURCES = (
     "https://thehackernews.com/2026/11/critical-apache-roller-rce-flaw-under.html",
     "https://www.bleepingcomputer.com/news/security/apache-warns-of-roller-rce-"
     "vulnerability-exploited-in-attacks/",
+    "https://www.cisa.gov/news-events/alerts/2026/11/20/"
+    "cisa-adds-four-known-exploited-vulnerabilities-catalog",
 )
 
 # Theme directory names under app/src/main/webapp/themes/ (apache/roller).
@@ -186,8 +188,8 @@ def _critical(version: tuple[int, ...], where: str) -> dict:
             f"{CHECK.cve} (same bug as CVE-2026-82384, CVSS 9.8): unauthenticated "
             "XML-RPC vendor-extension deserialization at /roller-services/xmlrpc "
             "before authentication. Affected 4.0.0 through 6.1.5; fixed in 6.1.6. "
-            "Exploited per Apache (ASF / oss-security); not listed in CISA KEV as "
-            "of 2026-11-19. Only already-crawled HTML was read; no request was "
+            "Exploited per Apache (ASF / oss-security); added to CISA KEV on "
+            "2026-11-20. Only already-crawled HTML was read; no request was "
             "sent to /roller-services/xmlrpc, /roller/roller-services/xmlrpc, "
             "/roller-ui/login*, /roller-ui/admin*, or /roller-services/rest*; no "
             f"XML-RPC body, auth, or payload was sent. {_sources_note()}"
@@ -212,8 +214,8 @@ def _info() -> dict:
             f"version was visible. {CHECK.cve} (same bug as CVE-2026-82384) "
             "affects 4.0.0–6.1.5; fixed in 6.1.6. Confirm the install is "
             ">= 6.1.6 or set enabledForExtensions=false / remove the XML-RPC "
-            "servlet mapping in WEB-INF/web.xml. Exploited per Apache; not in "
-            "CISA KEV as of 2026-11-19. No request was sent to the XML-RPC "
+            "servlet mapping in WEB-INF/web.xml. Exploited per Apache; added to "
+            "CISA KEV on 2026-11-20. No request was sent to the XML-RPC "
             f"endpoint or admin/login paths. {_sources_note()}"
         ),
         fix=_fix(),

@@ -9517,10 +9517,8 @@ def test_apache_roller_version_matrix(monkeypatch, version, flagged):
         assert found[0]["check"]["match"] == f"apache-roller:{label}"
         assert "CVE-2026-82384" in found[0]["evidence"]
         assert "exploited per apache" in found[0]["evidence"].lower()
-        assert (
-            "not listed in cisa kev" in found[0]["evidence"].lower()
-            or "not in cisa kev" in found[0]["evidence"].lower()
-        )
+        assert "added to cisa kev on 2026-11-20" in found[0]["evidence"].lower()
+        assert "not listed in cisa kev" not in found[0]["evidence"].lower()
         assert "6.1.6" in found[0]["fix"]
         assert "enabledForExtensions" in found[0]["fix"]
         assert "exploit" not in found[0]["title"].lower()
@@ -9570,7 +9568,8 @@ def test_apache_roller_no_version_is_info(monkeypatch):
     assert "6.1.6" in found[0]["title"]
     assert "web.xml" in found[0]["title"]
     assert "CVE-2026-129448" in found[0]["title"]
-    assert "not in CISA KEV" in found[0]["evidence"]
+    assert "added to CISA KEV on 2026-11-20" in found[0]["evidence"]
+    assert "not in CISA KEV" not in found[0]["evidence"]
 
 
 def test_apache_roller_non_roller_sends_nothing(monkeypatch):
