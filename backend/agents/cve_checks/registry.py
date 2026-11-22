@@ -28,6 +28,7 @@ from . import (
     mercury,
     metabase,
     mlflow_gateway,
+    monai_label,
     nextjs,
     nextjs_nov2026,
     nginx2root,
@@ -103,6 +104,7 @@ CHECKS: tuple[CveCheck, ...] = (
     apache_roller.CHECK,
     php_nov2026.CHECK,
     nginx2root.CHECK,
+    monai_label.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
