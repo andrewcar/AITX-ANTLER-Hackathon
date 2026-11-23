@@ -27,6 +27,7 @@ from . import (
     litellm_guardrail,
     magento,
     mercury,
+    miniorange_otp,
     metabase,
     mlflow_gateway,
     monai_label,
@@ -111,6 +112,7 @@ CHECKS: tuple[CveCheck, ...] = (
     rtmedia.CHECK,
     dokan.CHECK,
     soledad_theme.CHECK,
+    miniorange_otp.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
