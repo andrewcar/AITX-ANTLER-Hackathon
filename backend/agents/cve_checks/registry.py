@@ -40,6 +40,7 @@ from . import (
     php_nov2026,
     redcap,
     registration_form_woocommerce,
+    rtmedia,
     slicewp,
     supabase_storage,
     ultra_addons_cf7,
@@ -106,6 +107,7 @@ CHECKS: tuple[CveCheck, ...] = (
     php_nov2026.CHECK,
     nginx2root.CHECK,
     monai_label.CHECK,
+    rtmedia.CHECK,
     newsletters.CHECK,
 )
 
