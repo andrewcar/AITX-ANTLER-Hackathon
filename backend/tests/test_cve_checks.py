@@ -72,6 +72,7 @@ from agents.cve_checks.monai_label import CHECK as MONAI_LABEL
 from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
+from agents.cve_checks.rtmedia import CHECK as RTMEDIA
 import planner
 import main
 import orchestrator
@@ -346,6 +347,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/storage/v1/version") == 1
     assert paths.count("/version") == 2  # mlflow + gpustack
     assert paths.count("/info/") == 1  # monai label
+    assert paths.count("/wp-content/plugins/buddypress-media/readme.txt") == 1
+    assert "custom_fields" not in blob.lower()
     assert "/datastore/" not in blob
     assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
@@ -2724,28 +2727,29 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
     assert ids[-1] == "dokan"
-    assert ids[-2] == "monai-label"
-    assert ids[-3] == "nginx2root"
-    assert ids[-4] == "php-nov2026"
-    assert ids[-5] == "apache-roller"
-    assert ids[-6] == "redcap"
-    assert ids[-7] == "drupal-install"
-    assert ids[-8] == "litellm-guardrail"
-    assert ids[-9] == "mercury"
-    assert ids[-10] == "confluence-axis"
-    assert ids[-11] == "ultra-addons-cf7"
-    assert ids[-12] == "estatik"
-    assert ids[-13] == "automatorwp-webhooks"
-    assert ids[-14] == "bricksforge"
+    assert ids[-2] == "rtmedia"
+    assert ids[-3] == "monai-label"
+    assert ids[-4] == "nginx2root"
+    assert ids[-5] == "php-nov2026"
+    assert ids[-6] == "apache-roller"
+    assert ids[-7] == "redcap"
+    assert ids[-8] == "drupal-install"
+    assert ids[-9] == "litellm-guardrail"
+    assert ids[-10] == "mercury"
+    assert ids[-11] == "confluence-axis"
+    assert ids[-12] == "ultra-addons-cf7"
+    assert ids[-13] == "estatik"
+    assert ids[-14] == "automatorwp-webhooks"
+    assert ids[-15] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
-        "php-nov2026", "nginx2root", "monai-label", "dokan",
+        "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
     ):
         assert required in ids
-    assert ids[-15] == "btcpay-server"
+    assert ids[-16] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2764,6 +2768,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert PHP_NOV2026.agent == "misconfig"
     assert NGINX2ROOT.agent == "misconfig"
     assert MONAI_LABEL.agent == "auth"
+    assert RTMEDIA.agent == "misconfig"
     assert DOKAN.agent == "auth"
     assert DOKAN.cve == "CVE-2026-119220"
 
@@ -10452,6 +10457,177 @@ def test_monai_label_version_helper_fails_closed():
         "name": "MONAILabel - Radiology (0.8)",
         "version": "0.8",
     }) is None
+
+
+# --- rtMedia (CVE-2026-128102) ----------------------------------------------
+
+RTMEDIA_README = "/wp-content/plugins/buddypress-media/readme.txt"
+
+
+def _rtmedia_readme(tag=None):
+    lines = [
+        "=== rtMedia for WordPress, BuddyPress and bbPress ===",
+        "Contributors: rtcamp",
+        "Requires at least: 4.9.6",
+        "Tested up to: 7.0",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "Add albums, photo, audio/video upload, privacy, sharing.",
+        "",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _assert_rtmedia_one_get(transport):
+    assert transport.calls == [("GET", RTMEDIA_README, None, False)]
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "custom_fields" not in blob
+    for banned in ("select ", "union ", "sleep(", "benchmark(", "'", '"', "--"):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag,critical", [
+    ("4.7.17", True),
+    ("4.7.16", True),
+    ("4.7.0", True),
+    ("4.0.0", True),
+    ("4.7.18", False),
+    ("4.7.19", False),
+    ("4.8.0", False),
+])
+def test_rtmedia_stable_tag_range(monkeypatch, tag, critical):
+    transport = Transport()
+    transport.routes[RTMEDIA_README] = {
+        "status": 200, "content_type": "text/plain", "body": _rtmedia_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = RTMEDIA.run({}, _ctx())
+    _assert_rtmedia_one_get(transport)
+    if critical:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert found[0]["check"]["match"] == f"rtmedia:{tag}"
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert "CVE-2026-128102" in found[0]["evidence"]
+        assert "4.7.18" in found[0]["fix"]
+        assert "Patchstack telemetry, not CISA KEV" in found[0]["evidence"]
+        assert "custom_fields" in found[0]["evidence"]
+        blob = json.dumps(found)
+        assert "proven" not in blob.lower()
+        assert "select " not in blob.lower()
+        assert "union " not in blob.lower()
+    else:
+        assert found == []
+
+
+def test_rtmedia_fixed_and_current_are_not_flagged(monkeypatch):
+    for tag in ("4.7.18", "4.7.19"):
+        transport = Transport()
+        transport.routes[RTMEDIA_README] = {
+            "status": 200, "content_type": "text/plain", "body": _rtmedia_readme(tag),
+        }
+        _install(monkeypatch, transport)
+        assert RTMEDIA.run({}, _ctx()) == []
+        _assert_rtmedia_one_get(transport)
+
+
+def test_rtmedia_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[RTMEDIA_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert RTMEDIA.run({}, _ctx()) == []
+    _assert_rtmedia_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "not a readme",
+    "Stable tag: 4.7.17\n",
+    "<!doctype html><html><head><title>rtMedia</title></head>"
+    "<body>Stable tag: 4.7.17</body></html>",
+    "=== Some Other Plugin ===\nContributors: someone\nStable tag: 4.7.17\n",
+    "rtMedia is mentioned here.\nStable tag: 4.7.17\n",
+])
+def test_rtmedia_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[RTMEDIA_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert RTMEDIA.run({}, _ctx()) == []
+    _assert_rtmedia_one_get(transport)
+
+
+def test_rtmedia_readme_without_stable_tag_is_unknown(monkeypatch):
+    transport = Transport()
+    transport.routes[RTMEDIA_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _rtmedia_readme(None),
+    }
+    _install(monkeypatch, transport)
+    found = RTMEDIA.run({}, _ctx())
+    _assert_rtmedia_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "rtmedia:unknown"
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "CVE-2026-128102" in found[0]["evidence"]
+
+
+def test_rtmedia_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_rtmedia_readme("4.7.17").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_rtmedia_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = RTMEDIA.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "rtmedia:4.7.17"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert RTMEDIA_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "custom_fields" not in rows[-1]["url"].lower()
+
+
+def test_rtmedia_check_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "rtmedia.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert RTMEDIA.id == "rtmedia"
+    assert RTMEDIA.cve == "CVE-2026-128102"
+    assert RTMEDIA.agent == "misconfig"
+    assert "custom_fields" in RTMEDIA.does_not_send
+    assert "SQL" in RTMEDIA.does_not_send
 
 
 # --- Dokan (CVE-2026-119220) ------------------------------------------------
