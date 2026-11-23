@@ -29,6 +29,7 @@ from . import (
     metabase,
     mlflow_gateway,
     monai_label,
+    newsletters,
     nextjs,
     nextjs_nov2026,
     nginx2root,
@@ -105,6 +106,7 @@ CHECKS: tuple[CveCheck, ...] = (
     php_nov2026.CHECK,
     nginx2root.CHECK,
     monai_label.CHECK,
+    newsletters.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
