@@ -53,6 +53,7 @@ from . import (
     xen_orchestra,
     yootheme,
     masteriyo,
+    soledad_theme,
 )
 from .spec import CveCheck
 
@@ -109,6 +110,7 @@ CHECKS: tuple[CveCheck, ...] = (
     monai_label.CHECK,
     rtmedia.CHECK,
     dokan.CHECK,
+    soledad_theme.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]

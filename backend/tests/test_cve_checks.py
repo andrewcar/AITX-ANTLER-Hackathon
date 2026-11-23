@@ -73,6 +73,7 @@ from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
 from agents.cve_checks.rtmedia import CHECK as RTMEDIA
+from agents.cve_checks.soledad_theme import CHECK as SOLEDAD
 import planner
 import main
 import orchestrator
@@ -349,6 +350,7 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/info/") == 1  # monai label
     assert paths.count("/wp-content/plugins/buddypress-media/readme.txt") == 1
     assert "custom_fields" not in blob.lower()
+    assert paths.count("/wp-content/themes/soledad/style.css") == 1
     assert "/datastore/" not in blob
     assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
@@ -2726,30 +2728,32 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "dokan"
-    assert ids[-2] == "rtmedia"
-    assert ids[-3] == "monai-label"
-    assert ids[-4] == "nginx2root"
-    assert ids[-5] == "php-nov2026"
-    assert ids[-6] == "apache-roller"
-    assert ids[-7] == "redcap"
-    assert ids[-8] == "drupal-install"
-    assert ids[-9] == "litellm-guardrail"
-    assert ids[-10] == "mercury"
-    assert ids[-11] == "confluence-axis"
-    assert ids[-12] == "ultra-addons-cf7"
-    assert ids[-13] == "estatik"
-    assert ids[-14] == "automatorwp-webhooks"
-    assert ids[-15] == "bricksforge"
+    assert ids[-1] == "soledad-theme"
+    assert ids[-2] == "dokan"
+    assert ids[-3] == "rtmedia"
+    assert ids[-4] == "monai-label"
+    assert ids[-5] == "nginx2root"
+    assert ids[-6] == "php-nov2026"
+    assert ids[-7] == "apache-roller"
+    assert ids[-8] == "redcap"
+    assert ids[-9] == "drupal-install"
+    assert ids[-10] == "litellm-guardrail"
+    assert ids[-11] == "mercury"
+    assert ids[-12] == "confluence-axis"
+    assert ids[-13] == "ultra-addons-cf7"
+    assert ids[-14] == "estatik"
+    assert ids[-15] == "automatorwp-webhooks"
+    assert ids[-16] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
         "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
+        "soledad-theme",
     ):
         assert required in ids
-    assert ids[-16] == "btcpay-server"
+    assert ids[-17] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2769,8 +2773,11 @@ def test_btcpay_registry_keeps_existing_checks():
     assert NGINX2ROOT.agent == "misconfig"
     assert MONAI_LABEL.agent == "auth"
     assert RTMEDIA.agent == "misconfig"
+    assert RTMEDIA.cve == "CVE-2026-128102"
     assert DOKAN.agent == "auth"
     assert DOKAN.cve == "CVE-2026-119220"
+    assert SOLEDAD.agent == "misconfig"
+    assert SOLEDAD.cve == "CVE-2026-121684"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -10457,6 +10464,241 @@ def test_monai_label_version_helper_fails_closed():
         "name": "MONAILabel - Radiology (0.8)",
         "version": "0.8",
     }) is None
+
+# --- Soledad theme (CVE-2026-121684) ----------------------------------------
+
+SOLEDAD_STYLE = "/wp-content/themes/soledad/style.css"
+
+
+def _soledad_style(version=None, *, theme="Soledad", author="PenciDesign",
+                   text_domain="soledad", extra=""):
+    lines = [
+        "/*",
+        f"Theme Name: {theme}",
+        "Theme URI: https://themeforest.net/item/soledad-multiconcept-blogmagazine-wp-theme/12945398",
+        f"Author: {author}",
+        "Author URI: https://pencidesign.net/",
+        "Description: Multi-Concept Blog Magazine WordPress Theme",
+        f"Text Domain: {text_domain}",
+    ]
+    if version is not None:
+        lines.append(f"Version: {version}")
+    lines.append("*/")
+    lines.append(extra)
+    return "\n".join(lines) + "\n"
+
+
+def _assert_soledad_one_get(transport):
+    assert transport.calls == [("GET", SOLEDAD_STYLE, None, False)]
+    assert len(transport.calls) == 1
+    method, path, session, follow = transport.calls[0]
+    assert method == "GET"
+    assert path == SOLEDAD_STYLE
+    assert "?" not in path
+    assert session is None
+    assert follow is False
+
+
+@pytest.mark.parametrize("version,vulnerable", [
+    ("8.7.7", True),
+    ("8.7.6", True),
+    ("8.0.0", True),
+    ("1.0.0", True),
+    ("8.7.8", False),
+    ("8.7.9", False),
+    ("8.8.0", False),
+    ("9.1.0", False),
+])
+def test_soledad_style_version_range(monkeypatch, version, vulnerable):
+    transport = Transport()
+    transport.routes[SOLEDAD_STYLE] = {
+        "status": 200,
+        "content_type": "text/css",
+        "body": _soledad_style(version),
+    }
+    _install(monkeypatch, transport)
+    found = SOLEDAD.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_soledad_one_get(transport)
+    if vulnerable:
+        assert len(found) == 1
+        assert found[0]["severity"] == "high"
+        assert found[0]["layer"] == "config"
+        assert found[0]["check"]["id"] == "soledad-theme"
+        assert found[0]["check"]["match"] == f"soledad-theme:{version}"
+        assert "likely vulnerable" in found[0]["title"]
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert "CVE-2026-121684" in found[0]["evidence"]
+        assert "8.7.8" in found[0]["fix"]
+        assert "Patchstack" in found[0]["evidence"]
+        assert "not CISA KEV" in found[0]["evidence"]
+        blob = json.dumps(found)
+        assert "likely vulnerable" in blob
+        assert "<?php" not in blob
+        assert "proven" not in blob.lower()
+    else:
+        assert found == []
+        assert "likely vulnerable" not in json.dumps(found)
+
+
+def test_soledad_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[SOLEDAD_STYLE] = {
+        "status": 404,
+        "content_type": "text/html",
+        "body": _soledad_style("8.7.7"),
+    }
+    _install(monkeypatch, transport)
+    assert SOLEDAD.run({}, _ctx()) == []
+    _assert_soledad_one_get(transport)
+
+
+@pytest.mark.parametrize("status,body", [
+    (200, "this is garbage and not a theme header Version: 8.7.7"),
+    (200, "<!doctype html><html><head><title>Soledad</title></head>"
+          "<body>Theme Name: Soledad\nAuthor: PenciDesign\n"
+          "Text Domain: soledad\nVersion: 8.7.7</body></html>"),
+    (200, _soledad_style("8.7.7", theme="Twenty Twenty-Four", author="WordPress",
+                         text_domain="twentytwentyfour")),
+    (200, "Theme Name: Soledad\nAuthor: PenciDesign\nText Domain: soledad\n"
+          "Version: 8.7.7\n"),
+    (200, "/*\nTheme Name: Soledad Child\nAuthor: PenciDesign\n"
+          "Text Domain: soledad\nVersion: 8.7.7\n*/\n"),
+])
+def test_soledad_garbage_or_other_theme_is_not_detected(monkeypatch, status, body):
+    transport = Transport()
+    transport.routes[SOLEDAD_STYLE] = {
+        "status": status, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert SOLEDAD.run({}, _ctx()) == []
+    _assert_soledad_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    _soledad_style(None),
+    _soledad_style("latest"),
+    _soledad_style("8.7.7-rc1"),
+    _soledad_style(None, extra="/* Version: 8.7.7 */"),
+])
+def test_soledad_header_without_parseable_version_is_unknown(monkeypatch, body):
+    transport = Transport()
+    transport.routes[SOLEDAD_STYLE] = {
+        "status": 200, "content_type": "text/css", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = SOLEDAD.run({}, _ctx())
+    _assert_soledad_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "soledad-theme:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in json.dumps(found).lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert UNCONFIRMED not in found[0]["evidence"]
+    assert "CVE-2026-121684" in found[0]["evidence"]
+
+
+def test_soledad_877_request_is_one_get_with_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        return _Resp(
+            status=200,
+            body=_soledad_style("8.7.7").encode(),
+            headers=[("content-type", "text/css")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_soledad_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = SOLEDAD.run({}, _ctx(session={"cookie": "do-not-send"}))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert len(seen["urls"]) == 1
+    assert seen["urls"][0].endswith(SOLEDAD_STYLE)
+    assert "?" not in seen["urls"][0]
+    assert "admin-ajax" not in seen["urls"][0]
+    assert found and found[0]["severity"] == "high"
+    assert "likely vulnerable" in found[0]["title"]
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert SOLEDAD_STYLE in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "admin-ajax" not in rows[-1]["url"].lower()
+
+
+def test_soledad_kill_switch_before_first_request_is_none(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_soledad_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                SOLEDAD.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_soledad_check_source_is_one_stylesheet_get():
+    text = (ROOT / "agents" / "cve_checks" / "soledad_theme.py").read_text(
+        encoding="utf-8"
+    )
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, STYLE" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "requests." not in text
+    assert "http.client" not in text
+    assert "../" not in text
+    assert "<?php" not in text
+    assert "infeedads" not in text
+    assert "admin-ajax.php?" not in text
+    assert SOLEDAD.id == "soledad-theme"
+    assert SOLEDAD.agent == "misconfig"
+    assert SOLEDAD.cve == "CVE-2026-121684"
+    assert SOLEDAD.sends.startswith("One GET of /wp-content/themes/soledad/style.css")
+    assert "admin-ajax.php" in SOLEDAD.does_not_send
+    assert "POST" in SOLEDAD.does_not_send
+    assert "8.7.8" in SOLEDAD.fixed
+
+
+def test_soledad_version_helper_fails_closed():
+    from agents.cve_checks.soledad_theme import affected, header_block, is_soledad_header, style_version
+
+    assert affected((8, 7, 7)) is True
+    assert affected((8, 7, 6)) is True
+    assert affected((8, 7)) is True
+    assert affected((8, 7, 8)) is False
+    assert affected((8, 8, 0)) is False
+    assert affected((9, 0, 0)) is False
+    block = header_block(_soledad_style("8.7.7"))
+    assert is_soledad_header(block) is True
+    assert style_version(block) == (8, 7, 7)
+    assert style_version(header_block(_soledad_style(None))) is None
+    assert is_soledad_header(header_block("garbage Version: 8.7.7")) is False
 
 
 # --- rtMedia (CVE-2026-128102) ----------------------------------------------
