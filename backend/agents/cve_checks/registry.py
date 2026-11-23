@@ -40,6 +40,7 @@ from . import (
     redcap,
     registration_form_woocommerce,
     slicewp,
+    simple_shopping_cart,
     supabase_storage,
     ultra_addons_cf7,
     vite_dev_server,
@@ -105,6 +106,7 @@ CHECKS: tuple[CveCheck, ...] = (
     php_nov2026.CHECK,
     nginx2root.CHECK,
     monai_label.CHECK,
+    simple_shopping_cart.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]

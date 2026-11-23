@@ -71,6 +71,7 @@ from agents.cve_checks.nginx2root import CHECK as NGINX2ROOT
 from agents.cve_checks.monai_label import CHECK as MONAI_LABEL
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
+from agents.cve_checks.simple_shopping_cart import CHECK as SIMPLE_SHOPPING_CART
 import planner
 import main
 import orchestrator
@@ -2709,28 +2710,29 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "monai-label"
-    assert ids[-2] == "nginx2root"
-    assert ids[-3] == "php-nov2026"
-    assert ids[-4] == "apache-roller"
-    assert ids[-5] == "redcap"
-    assert ids[-6] == "drupal-install"
-    assert ids[-7] == "litellm-guardrail"
-    assert ids[-8] == "mercury"
-    assert ids[-9] == "confluence-axis"
-    assert ids[-10] == "ultra-addons-cf7"
-    assert ids[-11] == "estatik"
-    assert ids[-12] == "automatorwp-webhooks"
-    assert ids[-13] == "bricksforge"
+    assert ids[-1] == "simple-shopping-cart"
+    assert ids[-2] == "monai-label"
+    assert ids[-3] == "nginx2root"
+    assert ids[-4] == "php-nov2026"
+    assert ids[-5] == "apache-roller"
+    assert ids[-6] == "redcap"
+    assert ids[-7] == "drupal-install"
+    assert ids[-8] == "litellm-guardrail"
+    assert ids[-9] == "mercury"
+    assert ids[-10] == "confluence-axis"
+    assert ids[-11] == "ultra-addons-cf7"
+    assert ids[-12] == "estatik"
+    assert ids[-13] == "automatorwp-webhooks"
+    assert ids[-14] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
-        "php-nov2026", "nginx2root", "monai-label",
+        "php-nov2026", "nginx2root", "monai-label", "simple-shopping-cart",
     ):
         assert required in ids
-    assert ids[-14] == "btcpay-server"
+    assert ids[-15] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2749,6 +2751,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert PHP_NOV2026.agent == "misconfig"
     assert NGINX2ROOT.agent == "misconfig"
     assert MONAI_LABEL.agent == "auth"
+    assert SIMPLE_SHOPPING_CART.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -10435,3 +10438,195 @@ def test_monai_label_version_helper_fails_closed():
         "name": "MONAILabel - Radiology (0.8)",
         "version": "0.8",
     }) is None
+
+
+# --- Simple Shopping Cart ---------------------------------------------------
+
+CART_README = "/wp-content/plugins/wordpress-simple-paypal-shopping-cart/readme.txt"
+
+
+def _cart_readme(tag=None):
+    lines = [
+        "=== Simple Shopping Cart ===",
+        "Contributors: Tips and Tricks HQ, mra13",
+        "Requires at least: 6.0",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "== Changelog ==",
+        "= 5.3.3 =",
+        "- older release note that must not override the Stable tag",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _install_cart(monkeypatch, transport):
+    """Route the check through the mocked transport and reject a request body."""
+    _install(monkeypatch, transport)
+
+    def fetch(url, session=None, max_bytes=65536, follow=False, **kwargs):
+        assert kwargs == {}
+        return transport.fetch(
+            url, session=session, max_bytes=max_bytes, follow=follow,
+        )
+
+    monkeypatch.setattr(recon, "fetch", fetch)
+
+
+def _assert_cart_one_get(transport):
+    assert transport.calls == [("GET", CART_README, None, False)]
+
+
+@pytest.mark.parametrize("tag,critical", [
+    ("5.3.3", True),
+    ("5.3.2", True),
+    ("5.0.3", True),
+    ("5.3", True),
+    ("1.0.0", True),
+    ("5.3.4", False),
+    ("5.3.5", False),
+    ("5.3.10", False),
+    ("6.0.0", False),
+])
+def test_simple_shopping_cart_stable_tag_range(monkeypatch, tag, critical):
+    transport = Transport()
+    transport.routes[CART_README] = {
+        "status": 200, "content_type": "text/plain", "body": _cart_readme(tag),
+    }
+    _install_cart(monkeypatch, transport)
+    found = SIMPLE_SHOPPING_CART.run({}, _ctx())
+    _assert_cart_one_get(transport)
+    if critical:
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert found[0]["check"]["match"] == f"simple-shopping-cart:{tag}"
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert "CVE-2026-131782" in found[0]["evidence"]
+        assert "5.3.4" in found[0]["fix"]
+        assert "not CISA KEV" in found[0]["evidence"]
+        assert "CISA KEV" not in found[0]["title"]
+        blob = json.dumps(found)
+        assert "O:" not in blob
+        assert "unserialize" not in blob.lower()
+        assert "<?php" not in blob
+    else:
+        assert found == []
+
+
+def test_simple_shopping_cart_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[CART_README] = {"status": 404, "body": ""}
+    _install_cart(monkeypatch, transport)
+    assert SIMPLE_SHOPPING_CART.run({}, _ctx()) == []
+    _assert_cart_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "garbage with no plugin header\nStable tag: 5.3.3\n",
+    "<!doctype html><html><body>Simple Shopping Cart Stable tag: 5.3.3</body></html>",
+    "=== Some Other Cart ===\nContributors: someone\nStable tag: 5.3.3\n",
+    "=== Simple Shopping Cart ===\nthis page is not a readme\n",
+])
+def test_simple_shopping_cart_garbage_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[CART_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install_cart(monkeypatch, transport)
+    assert SIMPLE_SHOPPING_CART.run({}, _ctx()) == []
+    _assert_cart_one_get(transport)
+
+
+def test_simple_shopping_cart_readme_without_version_is_unknown(monkeypatch):
+    transport = Transport()
+    transport.routes[CART_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _cart_readme(None),
+    }
+    _install_cart(monkeypatch, transport)
+    found = SIMPLE_SHOPPING_CART.run({}, _ctx())
+    _assert_cart_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "simple-shopping-cart:unknown"
+    assert UNCONFIRMED not in found[0]["title"]
+    assert UNCONFIRMED not in found[0]["evidence"]
+    assert "5.3.3" not in found[0]["check"]["match"]
+
+
+def test_simple_shopping_cart_requests_are_one_get_with_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_cart_readme("5.3.3").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_simple_cart_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = SIMPLE_SHOPPING_CART.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "simple-shopping-cart:5.3.3"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert CART_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+
+
+def test_simple_shopping_cart_kill_switch_before_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_simple_cart_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                SIMPLE_SHOPPING_CART.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_simple_shopping_cart_source_is_one_readme_get():
+    text = (
+        ROOT / "agents" / "cve_checks" / "simple_shopping_cart.py"
+    ).read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    for banned in (
+        "unserialize(", "O:", "admin-ajax", "/wp-admin", "<?php",
+        "php://", "../", "multipart", "add-to-cart",
+    ):
+        assert banned not in text
+    assert SIMPLE_SHOPPING_CART.id == "simple-shopping-cart"
+    assert SIMPLE_SHOPPING_CART.cve == "CVE-2026-131782"
+    assert "5.3.4" in SIMPLE_SHOPPING_CART.fixed
+    assert "through 5.3.3" in SIMPLE_SHOPPING_CART.fixed
