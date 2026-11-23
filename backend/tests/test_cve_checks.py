@@ -72,6 +72,7 @@ from agents.cve_checks.monai_label import CHECK as MONAI_LABEL
 from agents.cve_checks.miniorange_otp import CHECK as MINIORANGE_OTP
 from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.simple_shopping_cart import CHECK as SIMPLE_SHOPPING_CART
+from agents.cve_checks.newsletters import CHECK as NEWSLETTERS
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
 from agents.cve_checks.rtmedia import CHECK as RTMEDIA
@@ -358,6 +359,7 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
     assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
     assert paths.count("/wp-content/plugins/miniorange-otp-verification/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/newsletters-lite/readme.txt") == 1
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     # SliceWP only probes readme when the plugin path was already in crawled HTML.
     assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
@@ -2930,34 +2932,35 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "simple-shopping-cart"
-    assert ids[-2] == "miniorange-otp"
-    assert ids[-3] == "soledad-theme"
-    assert ids[-4] == "dokan"
-    assert ids[-5] == "rtmedia"
-    assert ids[-6] == "monai-label"
-    assert ids[-7] == "nginx2root"
-    assert ids[-8] == "php-nov2026"
-    assert ids[-9] == "apache-roller"
-    assert ids[-10] == "redcap"
-    assert ids[-11] == "drupal-install"
-    assert ids[-12] == "litellm-guardrail"
-    assert ids[-13] == "mercury"
-    assert ids[-14] == "confluence-axis"
-    assert ids[-15] == "ultra-addons-cf7"
-    assert ids[-16] == "estatik"
-    assert ids[-17] == "automatorwp-webhooks"
-    assert ids[-18] == "bricksforge"
+    assert ids[-1] == "newsletters"
+    assert ids[-2] == "simple-shopping-cart"
+    assert ids[-3] == "miniorange-otp"
+    assert ids[-4] == "soledad-theme"
+    assert ids[-5] == "dokan"
+    assert ids[-6] == "rtmedia"
+    assert ids[-7] == "monai-label"
+    assert ids[-8] == "nginx2root"
+    assert ids[-9] == "php-nov2026"
+    assert ids[-10] == "apache-roller"
+    assert ids[-11] == "redcap"
+    assert ids[-12] == "drupal-install"
+    assert ids[-13] == "litellm-guardrail"
+    assert ids[-14] == "mercury"
+    assert ids[-15] == "confluence-axis"
+    assert ids[-16] == "ultra-addons-cf7"
+    assert ids[-17] == "estatik"
+    assert ids[-18] == "automatorwp-webhooks"
+    assert ids[-19] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
         "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
-        "soledad-theme", "miniorange-otp", "simple-shopping-cart",
+        "soledad-theme", "miniorange-otp", "simple-shopping-cart", "newsletters",
     ):
         assert required in ids
-    assert ids[-19] == "btcpay-server"
+    assert ids[-20] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2985,6 +2988,7 @@ def test_btcpay_registry_keeps_existing_checks():
     assert SOLEDAD.cve == "CVE-2026-121684"
     assert MINIORANGE_OTP.agent == "auth"
     assert MINIORANGE_OTP.cve == "CVE-2026-129073"
+    assert NEWSLETTERS.agent == "misconfig"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -11527,3 +11531,215 @@ def test_simple_shopping_cart_source_is_one_readme_get():
     assert SIMPLE_SHOPPING_CART.cve == "CVE-2026-131782"
     assert "5.3.4" in SIMPLE_SHOPPING_CART.fixed
     assert "through 5.3.3" in SIMPLE_SHOPPING_CART.fixed
+
+# --- Tribulant Newsletters (CVE-2026-111402) --------------------------------
+
+NEWSLETTERS_README = "/wp-content/plugins/newsletters-lite/readme.txt"
+
+
+def _newsletters_readme(tag=None):
+    lines = [
+        "=== Newsletters ===",
+        "Contributors: contrid",
+        "Requires at least: 3.8",
+        "Tested up to: 7.1.4",
+        "Newsletter plugin for WordPress by Tribulant.",
+    ]
+    if tag is not None:
+        lines.insert(2, f"Stable tag: {tag}")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_newsletters_one_get(transport):
+    assert transport.calls == [("GET", NEWSLETTERS_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    assert all(call[0] == "GET" and call[2] is None and call[3] is False for call in transport.calls)
+
+
+@pytest.mark.parametrize("tag", ["4.18.1", "4.18.0", "4.18", "4.0.1", "1.0"])
+def test_newsletters_affected_version_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[NEWSLETTERS_README] = {
+        "status": 200, "content_type": "text/plain", "body": _newsletters_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = NEWSLETTERS.run({}, _ctx())
+    _assert_newsletters_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == f"newsletters:{tag}"
+    assert "likely vulnerable" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-111402" in found[0]["title"]
+    assert "update to 4.18.3" in found[0]["title"]
+    assert "update to 4.18.3" in found[0]["fix"]
+    assert "CVE-2026-129039" in found[0]["evidence"]
+    assert "CVE-2026-129043" in found[0]["evidence"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    blob = json.dumps(found).lower()
+    assert "cisa kev" not in found[0]["title"].lower()
+    assert "proven" not in blob
+    assert "<?php" not in blob
+
+
+def test_newsletters_4182_reports_update_to_4183(monkeypatch):
+    transport = Transport()
+    transport.routes[NEWSLETTERS_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _newsletters_readme("4.18.2"),
+    }
+    _install(monkeypatch, transport)
+    found = NEWSLETTERS.run({}, _ctx())
+    _assert_newsletters_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "newsletters:4.18.2"
+    assert "update to 4.18.3" in found[0]["title"]
+    assert "update to 4.18.3" in found[0]["fix"]
+    assert "likely vulnerable" in found[0]["title"]
+    assert "CVE-2026-129039" in found[0]["title"]
+    assert "CVE-2026-129043" in found[0]["evidence"]
+    assert "not likely vulnerable to that SQL injection" in found[0]["evidence"]
+    assert "CVE-2026-111402" not in found[0]["title"]
+
+
+@pytest.mark.parametrize("tag", ["4.18.3", "4.18.4", "4.19.0", "5.0.0"])
+def test_newsletters_fixed_and_newer_versions_are_not_detected(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[NEWSLETTERS_README] = {
+        "status": 200, "content_type": "text/plain", "body": _newsletters_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    assert NEWSLETTERS.run({}, _ctx()) == []
+    _assert_newsletters_one_get(transport)
+
+
+def test_newsletters_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[NEWSLETTERS_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert NEWSLETTERS.run({}, _ctx()) == []
+    _assert_newsletters_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 4.18.1\n",
+    "<!doctype html><html><head><title>Newsletters</title></head>"
+    "<body>Tribulant Stable tag: 4.18.1</body></html>",
+    "=== Some Other Plugin ===\nContributors: contrid\nStable tag: 4.18.1\n",
+    "=== Newsletters ===\nContributors: someone-else\nStable tag: 4.18.1\n",
+])
+def test_newsletters_garbage_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[NEWSLETTERS_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert NEWSLETTERS.run({}, _ctx()) == []
+    _assert_newsletters_one_get(transport)
+
+
+def test_newsletters_readme_without_version_is_unknown(monkeypatch):
+    transport = Transport()
+    transport.routes[NEWSLETTERS_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _newsletters_readme(None),
+    }
+    _install(monkeypatch, transport)
+    found = NEWSLETTERS.run({}, _ctx())
+    _assert_newsletters_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "newsletters:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+
+
+def test_newsletters_one_get_has_no_body(monkeypatch):
+    transport = Transport()
+    transport.routes[NEWSLETTERS_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _newsletters_readme("4.18.1"),
+    }
+    _install(monkeypatch, transport)
+    found = NEWSLETTERS.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_newsletters_one_get(transport)
+    assert found[0]["severity"] == "critical"
+    text = (ROOT / "agents" / "cve_checks" / "newsletters.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "requests." not in text
+    assert "http.client" not in text
+    for banned in ("<?php", "php://", "../", "multipart", "SLEEP(", "UNION SELECT", "O:"):
+        assert banned not in text
+
+
+def test_newsletters_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_newsletters_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                NEWSLETTERS.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_newsletters_audited_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        return _Resp(
+            body=_newsletters_readme("4.18.1").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_newsletters_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = NEWSLETTERS.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == NEWSLETTERS_README
+    assert sent.query == ""
+    assert sent.scheme in ("http", "https")
+    assert found and found[0]["severity"] == "critical"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert NEWSLETTERS_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
