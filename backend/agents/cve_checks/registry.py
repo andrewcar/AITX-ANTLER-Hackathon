@@ -27,6 +27,7 @@ from . import (
     litellm_guardrail,
     magento,
     mercury,
+    miniorange_otp,
     metabase,
     mlflow_gateway,
     monai_label,
@@ -54,6 +55,7 @@ from . import (
     xen_orchestra,
     yootheme,
     masteriyo,
+    soledad_theme,
 )
 from .spec import CveCheck
 
@@ -110,6 +112,8 @@ CHECKS: tuple[CveCheck, ...] = (
     monai_label.CHECK,
     rtmedia.CHECK,
     dokan.CHECK,
+    soledad_theme.CHECK,
+    miniorange_otp.CHECK,
     simple_shopping_cart.CHECK,
 )
 
