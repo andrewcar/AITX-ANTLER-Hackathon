@@ -16,6 +16,7 @@ from . import (
     contact_form_7,
     craft_cms,
     dependency_files,
+    dokan,
     drupal_install,
     estatik,
     gpustack_auth,
@@ -108,6 +109,7 @@ CHECKS: tuple[CveCheck, ...] = (
     nginx2root.CHECK,
     monai_label.CHECK,
     rtmedia.CHECK,
+    dokan.CHECK,
     simple_shopping_cart.CHECK,
 )
 
