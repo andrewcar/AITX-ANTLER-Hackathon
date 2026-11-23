@@ -43,6 +43,7 @@ from . import (
     registration_form_woocommerce,
     rtmedia,
     slicewp,
+    simple_shopping_cart,
     supabase_storage,
     ultra_addons_cf7,
     vite_dev_server,
@@ -113,6 +114,7 @@ CHECKS: tuple[CveCheck, ...] = (
     dokan.CHECK,
     soledad_theme.CHECK,
     miniorange_otp.CHECK,
+    simple_shopping_cart.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
