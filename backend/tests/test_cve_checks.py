@@ -69,6 +69,7 @@ from agents.cve_checks.apache_roller import CHECK as APACHE_ROLLER
 from agents.cve_checks.php_nov2026 import CHECK as PHP_NOV2026
 from agents.cve_checks.nginx2root import CHECK as NGINX2ROOT
 from agents.cve_checks.monai_label import CHECK as MONAI_LABEL
+from agents.cve_checks.miniorange_otp import CHECK as MINIORANGE_OTP
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
 import planner
@@ -344,6 +345,7 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/ameliabooking/readme.txt") == 1
     assert paths.count("/wp-content/plugins/contact-form-7/readme.txt") == 1
     assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/miniorange-otp-verification/readme.txt") == 1
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     # SliceWP only probes readme when the plugin path was already in crawled HTML.
     assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
@@ -464,6 +466,11 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert all(
         path == "/wp-content/plugins/latepoint/readme.txt"
         or "latepoint" not in path
+        for path in paths
+    )
+    assert all(
+        path == "/wp-content/plugins/miniorange-otp-verification/readme.txt"
+        or "miniorange" not in path
         for path in paths
     )
     assert all(
@@ -960,6 +967,199 @@ def test_masteriyo_readme_without_stable_tag_is_info(monkeypatch):
     assert found[0]["check"]["match"] == "masteriyo:unknown"
     assert "CVE-2026-73996" in found[0]["evidence"]
     assert UNCONFIRMED not in found[0]["title"]
+
+
+# --- miniOrange OTP Verification (CVE-2026-129073) --------------------------
+
+MINIORANGE_README = "/wp-content/plugins/miniorange-otp-verification/readme.txt"
+
+
+def _miniorange_readme(tag=None):
+    lines = [
+        "=== miniOrange OTP Login, Verification and SMS Notifications ===",
+        "Contributors: cyberlord92, geniuszealot",
+        "Requires at least: 4.7.0",
+        "Tested up to: 7.1",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "OTP via SMS, Email/WhatsApp. WooCommerce SMS Notifications.",
+        "",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _install_miniorange(monkeypatch, transport):
+    """Install the mock transport and reject any GET that carries a body."""
+
+    def fetch(url, session=None, max_bytes=65536, follow=False, **extra):
+        if extra:
+            raise AssertionError(f"readme GET carried a body or extra arguments: {extra}")
+        return transport.fetch(url, session=session, max_bytes=max_bytes, follow=follow)
+
+    monkeypatch.setattr(recon, "fetch", fetch)
+    monkeypatch.setattr(recon, "post_brotli_json", transport.post)
+
+    def boom(*_a, **_k):
+        raise AssertionError("CVE check used a request path other than fetch or post_brotli_json")
+
+    monkeypatch.setattr(recon, "get", boom)
+    monkeypatch.setattr(recon, "probe", boom)
+    monkeypatch.setattr(recon, "send", boom)
+    monkeypatch.setattr(recon, "_do", boom)
+
+
+def _assert_miniorange_one_get(transport):
+    assert transport.calls == [("GET", MINIORANGE_README, None, False)]
+    method, path, session, follow = transport.calls[0]
+    assert method == "GET"
+    assert path == MINIORANGE_README
+    assert session is None
+    assert follow is False
+    # The recorded call is method, path, session, follow. No request body.
+    assert len(transport.calls[0]) == 4
+    blob = path.lower()
+    for banned in (
+        "wp-login.php",
+        "admin-ajax",
+        "otp-verification/api",
+        "mo_validate",
+        "resend",
+    ):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag,kind", [
+    ("5.6.1", "vulnerable"),
+    ("5.6.0", "vulnerable"),
+    ("5.5.8", "vulnerable"),
+    ("5.4.7", "vulnerable"),
+    ("1.0.0", "vulnerable"),
+    ("5.6.2", "update"),
+    ("5.6.3", "clean"),
+    ("5.6.4", "clean"),
+    ("5.7.0", "clean"),
+    ("6.0.0", "clean"),
+])
+def test_miniorange_otp_stable_tag(monkeypatch, tag, kind):
+    transport = Transport()
+    transport.routes[MINIORANGE_README] = {
+        "status": 200, "content_type": "text/plain", "body": _miniorange_readme(tag),
+    }
+    _install_miniorange(monkeypatch, transport)
+    found = MINIORANGE_OTP.run({}, _ctx())
+    _assert_miniorange_one_get(transport)
+    if kind == "vulnerable":
+        assert len(found) == 1
+        assert found[0]["severity"] == "critical"
+        assert found[0]["layer"] == "auth"
+        assert found[0]["check"]["match"] == f"miniorange-otp:{tag}"
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert "CVE-2026-129073" in found[0]["evidence"]
+        assert "5.6.3" in found[0]["fix"]
+        assert "CISA KEV" in found[0]["evidence"]
+        assert "Patchstack" in found[0]["evidence"]
+        assert "<?php" not in json.dumps(found)
+    elif kind == "update":
+        assert len(found) == 1
+        assert found[0]["severity"] == "info"
+        assert found[0]["check"]["match"] == f"miniorange-otp:{tag}"
+        assert "update to 5.6.3" in found[0]["title"]
+        assert "update to 5.6.3" in found[0]["evidence"].lower()
+        assert UNCONFIRMED not in found[0]["title"]
+        assert UNCONFIRMED not in found[0]["evidence"]
+        assert found[0]["severity"] != "critical"
+    else:
+        assert found == []
+
+
+def test_miniorange_otp_version_matrix():
+    from agents.cve_checks.miniorange_otp import affected, recommend_current
+    from agents.cve_checks.versions import parse_dotted
+
+    for tag in ("5.6.1", "5.6.0", "5.5.8", "5.4.6", "1.2.3"):
+        version = parse_dotted(tag)
+        assert affected(version)
+        assert not recommend_current(version)
+    patched = parse_dotted("5.6.2")
+    assert not affected(patched)
+    assert recommend_current(patched)
+    for tag in ("5.6.3", "5.6.10", "5.7.0", "6.0.0"):
+        version = parse_dotted(tag)
+        assert not affected(version)
+        assert not recommend_current(version)
+
+
+def test_miniorange_otp_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[MINIORANGE_README] = {"status": 404, "content_type": "text/html", "body": ""}
+    _install_miniorange(monkeypatch, transport)
+    assert MINIORANGE_OTP.run({}, _ctx()) == []
+    _assert_miniorange_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "garbage without a version\nStable tag: 5.6.1\n",
+    "<!doctype html><html><head><title>miniOrange OTP</title></head>"
+    "<body>Stable tag: 5.6.1</body></html>",
+    "<html><body><p>miniOrange OTP Verification Stable tag: 5.6.1</p></body></html>",
+    "=== Some Other Plugin ===\nContributors: someone\nRequires at least: 5.0\nStable tag: 5.6.1\n",
+    "=== miniOrange 2 Factor Authentication ===\nContributors: cyberlord92\n"
+    "Requires at least: 4.7.0\nStable tag: 6.6.0\n",
+])
+def test_miniorange_otp_garbage_or_other_readme_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[MINIORANGE_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install_miniorange(monkeypatch, transport)
+    assert MINIORANGE_OTP.run({}, _ctx()) == []
+    _assert_miniorange_one_get(transport)
+
+
+def test_miniorange_otp_readme_without_version_is_unknown(monkeypatch):
+    transport = Transport()
+    transport.routes[MINIORANGE_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _miniorange_readme(None),
+    }
+    _install_miniorange(monkeypatch, transport)
+    found = MINIORANGE_OTP.run({}, _ctx())
+    _assert_miniorange_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "miniorange-otp:unknown"
+    assert "CVE-2026-129073" in found[0]["evidence"]
+    assert UNCONFIRMED not in found[0]["title"]
+    assert UNCONFIRMED not in found[0]["evidence"]
+
+
+def test_miniorange_otp_request_budget_is_exactly_one_get(monkeypatch):
+    transport = Transport()
+    transport.routes[MINIORANGE_README] = {
+        "status": 200, "content_type": "text/plain", "body": _miniorange_readme("5.6.1"),
+    }
+    transport.routes["/wp-login.php"] = {"status": 200, "body": "should-never-be-fetched"}
+    _install_miniorange(monkeypatch, transport)
+    found = MINIORANGE_OTP.run({}, _ctx())
+    _assert_miniorange_one_get(transport)
+    assert found[0]["severity"] == "critical"
+    text = (ROOT / "agents" / "cve_checks" / "miniorange_otp.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "wp-login.php" in text
+    assert MINIORANGE_OTP.agent == "auth"
+    assert MINIORANGE_OTP.cve == "CVE-2026-129073"
+    for banned in ("<?php", "php://", "../", "multipart", "admin-ajax"):
+        assert banned not in text
 
 
 # --- Node-RED ---------------------------------------------------------------
@@ -2709,28 +2909,29 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "monai-label"
-    assert ids[-2] == "nginx2root"
-    assert ids[-3] == "php-nov2026"
-    assert ids[-4] == "apache-roller"
-    assert ids[-5] == "redcap"
-    assert ids[-6] == "drupal-install"
-    assert ids[-7] == "litellm-guardrail"
-    assert ids[-8] == "mercury"
-    assert ids[-9] == "confluence-axis"
-    assert ids[-10] == "ultra-addons-cf7"
-    assert ids[-11] == "estatik"
-    assert ids[-12] == "automatorwp-webhooks"
-    assert ids[-13] == "bricksforge"
+    assert ids[-1] == "miniorange-otp"
+    assert ids[-2] == "monai-label"
+    assert ids[-3] == "nginx2root"
+    assert ids[-4] == "php-nov2026"
+    assert ids[-5] == "apache-roller"
+    assert ids[-6] == "redcap"
+    assert ids[-7] == "drupal-install"
+    assert ids[-8] == "litellm-guardrail"
+    assert ids[-9] == "mercury"
+    assert ids[-10] == "confluence-axis"
+    assert ids[-11] == "ultra-addons-cf7"
+    assert ids[-12] == "estatik"
+    assert ids[-13] == "automatorwp-webhooks"
+    assert ids[-14] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
-        "php-nov2026", "nginx2root", "monai-label",
+        "php-nov2026", "nginx2root", "monai-label", "miniorange-otp",
     ):
         assert required in ids
-    assert ids[-14] == "btcpay-server"
+    assert ids[-15] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2749,6 +2950,8 @@ def test_btcpay_registry_keeps_existing_checks():
     assert PHP_NOV2026.agent == "misconfig"
     assert NGINX2ROOT.agent == "misconfig"
     assert MONAI_LABEL.agent == "auth"
+    assert MINIORANGE_OTP.agent == "auth"
+    assert MINIORANGE_OTP.cve == "CVE-2026-129073"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():

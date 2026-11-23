@@ -26,6 +26,7 @@ from . import (
     litellm_guardrail,
     magento,
     mercury,
+    miniorange_otp,
     metabase,
     mlflow_gateway,
     monai_label,
@@ -105,6 +106,7 @@ CHECKS: tuple[CveCheck, ...] = (
     php_nov2026.CHECK,
     nginx2root.CHECK,
     monai_label.CHECK,
+    miniorange_otp.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
