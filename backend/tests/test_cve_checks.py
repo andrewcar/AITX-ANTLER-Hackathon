@@ -69,6 +69,7 @@ from agents.cve_checks.apache_roller import CHECK as APACHE_ROLLER
 from agents.cve_checks.php_nov2026 import CHECK as PHP_NOV2026
 from agents.cve_checks.nginx2root import CHECK as NGINX2ROOT
 from agents.cve_checks.monai_label import CHECK as MONAI_LABEL
+from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
 import planner
@@ -199,6 +200,11 @@ BANNED = (
     "SETTINGS",
     "mail_auth_http",
     "auth_http",
+    "/wp-json/wc/",
+    "wp-json/wc/v1",
+    "wp-json/wc/v2",
+    "wp-json/wc/v3",
+    "/wc-analytics",
 )
 
 
@@ -473,6 +479,14 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     )
     assert all(
         "acf-extended" not in path
+        for path in paths
+    )
+    # Dokan always reads the public plugin readme and nothing else.
+    assert paths.count("/wp-content/plugins/dokan-lite/readme.txt") == 1
+    assert "/wp-json/wc/" not in blob
+    assert "wc-analytics" not in blob.lower()
+    assert all(
+        path == "/wp-content/plugins/dokan-lite/readme.txt" or "dokan" not in path
         for path in paths
     )
 
@@ -2709,28 +2723,29 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "monai-label"
-    assert ids[-2] == "nginx2root"
-    assert ids[-3] == "php-nov2026"
-    assert ids[-4] == "apache-roller"
-    assert ids[-5] == "redcap"
-    assert ids[-6] == "drupal-install"
-    assert ids[-7] == "litellm-guardrail"
-    assert ids[-8] == "mercury"
-    assert ids[-9] == "confluence-axis"
-    assert ids[-10] == "ultra-addons-cf7"
-    assert ids[-11] == "estatik"
-    assert ids[-12] == "automatorwp-webhooks"
-    assert ids[-13] == "bricksforge"
+    assert ids[-1] == "dokan"
+    assert ids[-2] == "monai-label"
+    assert ids[-3] == "nginx2root"
+    assert ids[-4] == "php-nov2026"
+    assert ids[-5] == "apache-roller"
+    assert ids[-6] == "redcap"
+    assert ids[-7] == "drupal-install"
+    assert ids[-8] == "litellm-guardrail"
+    assert ids[-9] == "mercury"
+    assert ids[-10] == "confluence-axis"
+    assert ids[-11] == "ultra-addons-cf7"
+    assert ids[-12] == "estatik"
+    assert ids[-13] == "automatorwp-webhooks"
+    assert ids[-14] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
         "ultra-addons-cf7", "ai-engine", "ai-engine-upload", "confluence-axis",
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
-        "php-nov2026", "nginx2root", "monai-label",
+        "php-nov2026", "nginx2root", "monai-label", "dokan",
     ):
         assert required in ids
-    assert ids[-14] == "btcpay-server"
+    assert ids[-15] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2749,6 +2764,8 @@ def test_btcpay_registry_keeps_existing_checks():
     assert PHP_NOV2026.agent == "misconfig"
     assert NGINX2ROOT.agent == "misconfig"
     assert MONAI_LABEL.agent == "auth"
+    assert DOKAN.agent == "auth"
+    assert DOKAN.cve == "CVE-2026-119220"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -10435,3 +10452,262 @@ def test_monai_label_version_helper_fails_closed():
         "name": "MONAILabel - Radiology (0.8)",
         "version": "0.8",
     }) is None
+
+
+# --- Dokan (CVE-2026-119220) ------------------------------------------------
+
+DOKAN_README = "/wp-content/plugins/dokan-lite/readme.txt"
+_DOKAN_BANNED = (
+    "/wp-json/wc/",
+    "wp-json/wc/v1",
+    "wp-json/wc/v2",
+    "wp-json/wc/v3",
+    "/wc-analytics",
+    "admin-ajax",
+    "/wp-admin",
+    "<?php",
+    "O:",
+    "../",
+)
+
+
+def _dokan_readme(tag=None, changelog=None):
+    lines = [
+        "=== Dokan: AI Powered WooCommerce Multivendor Marketplace Solution ===",
+        "Contributors: tareq1988, dokaninc, wedevs",
+        "Requires at least: 7.0",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.append("")
+    lines.append("== Changelog ==")
+    if changelog is not None:
+        lines.append(f"= v{changelog} ( Nov 19, 2026 ) =")
+        lines.append("* Security and maintenance release.")
+    elif tag is not None:
+        lines.append(f"= v{tag} ( Nov 19, 2026 ) =")
+        lines.append("* Release notes.")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_dokan_one_get(transport):
+    assert transport.calls == [("GET", DOKAN_README, None, False)]
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    for banned in _DOKAN_BANNED:
+        assert banned.lower() not in blob
+
+
+@pytest.mark.parametrize("tag,vulnerable", [
+    ("5.0.15", True),
+    ("5.0.16", True),
+    ("5.3.0", True),
+    ("5.3.3", True),
+    ("5.0.14", False),
+    ("5.0.0", False),
+    ("4.9.9", False),
+    ("5.3.4", False),
+    ("5.3.5", False),
+    ("5.4.0", False),
+    ("6.0.0", False),
+])
+def test_dokan_version_matrix(tag, vulnerable):
+    from agents.cve_checks.dokan import affected
+    from agents.cve_checks.versions import parse_dotted
+
+    assert bool(affected(parse_dotted(tag))) is vulnerable
+
+
+@pytest.mark.parametrize("tag,flagged", [
+    ("5.3.3", True),
+    ("5.0.15", True),
+    ("5.3.4", False),
+    ("5.3.5", False),
+    ("5.0.14", False),
+])
+def test_dokan_readme_stable_tag(monkeypatch, tag, flagged):
+    transport = Transport()
+    transport.routes[DOKAN_README] = {
+        "status": 200, "content_type": "text/plain", "body": _dokan_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = DOKAN.run({}, _ctx())
+    _assert_dokan_one_get(transport)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "high"
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert found[0]["check"]["match"] == f"dokan:{tag}"
+        assert "CVE-2026-119220" in found[0]["evidence"]
+        assert "not CISA KEV" in found[0]["evidence"]
+        assert "Patchstack" in found[0]["evidence"]
+        assert "5.3.5" in found[0]["fix"]
+        blob = json.dumps(found)
+        assert "/wp-json/wc/" not in blob
+        assert "<?php" not in blob
+        assert "proven" not in blob.lower()
+    else:
+        assert found == []
+
+
+def test_dokan_changelog_fallback_when_stable_tag_missing(monkeypatch):
+    transport = Transport()
+    transport.routes[DOKAN_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _dokan_readme(None, changelog="5.3.3"),
+    }
+    _install(monkeypatch, transport)
+    found = DOKAN.run({}, _ctx())
+    _assert_dokan_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "dokan:5.3.3"
+    assert "changelog version" in found[0]["evidence"]
+
+
+def test_dokan_stable_tag_wins_over_older_changelog(monkeypatch):
+    body = _dokan_readme("5.3.5", changelog="5.3.3")
+    transport = Transport()
+    transport.routes[DOKAN_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert DOKAN.run({}, _ctx()) == []
+    _assert_dokan_one_get(transport)
+
+
+def test_dokan_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[DOKAN_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert DOKAN.run({}, _ctx()) == []
+    _assert_dokan_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 5.3.3\n",
+    "<!doctype html><html><head><title>Dokan</title></head>"
+    "<body>Stable tag: 5.3.3</body></html>",
+    "<html><body><p>Dokan Stable tag: 5.3.3</p></body></html>",
+    "=== Some Other Plugin ===\nContributors: someone\nStable tag: 5.3.3\n",
+    "Dokan is mentioned here.\nStable tag: 5.3.3\n",
+])
+def test_dokan_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[DOKAN_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert DOKAN.run({}, _ctx()) == []
+    _assert_dokan_one_get(transport)
+
+
+def test_dokan_readme_without_version_is_unknown(monkeypatch):
+    transport = Transport()
+    transport.routes[DOKAN_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": (
+            "=== Dokan: AI Powered WooCommerce Multivendor Marketplace "
+            "Solution ===\n"
+            "Contributors: dokaninc\n"
+            "Requires at least: 7.0\n\n"
+            "Marketplace plugin.\n"
+            "== Changelog ==\n"
+            "* No version heading.\n"
+        ),
+    }
+    _install(monkeypatch, transport)
+    found = DOKAN.run({}, _ctx())
+    _assert_dokan_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "dokan:unknown"
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "unknown" in found[0]["title"].lower()
+    assert "CVE-2026-119220" in found[0]["evidence"]
+
+
+def test_dokan_requests_are_one_get_with_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        return _Resp(
+            body=_dokan_readme("5.3.3").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_dokan_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("auth"):
+            found = DOKAN.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "dokan:5.3.3"
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "auth"
+    assert DOKAN_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "/wp-json/wc/" not in rows[-1]["url"]
+
+
+def test_dokan_kill_switch_stops_the_check(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_dokan_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                DOKAN.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_dokan_non_allowlisted_host_is_refused():
+    with pytest.raises(main.ScopeError) as exc:
+        main.allowlisted_host(
+            "https://dokan.attacker.example/wp-content/plugins/dokan-lite/readme.txt"
+        )
+    assert "allowlist" in str(exc.value)
+
+
+def test_dokan_check_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "dokan.py").read_text(encoding="utf-8")
+    assert "fetch_path(ctx, README" in text
+    assert text.count("fetch_path(") == 1
+    assert "post_brotli" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "requests." not in text
+    assert "/wp-json/wc/" in text
+    assert "Never requests WooCommerce product API" in text
+    assert DOKAN.agent == "auth"
+    assert DOKAN.cve == "CVE-2026-119220"
+    assert DOKAN.id == "dokan"
+    assert "5.3.4" in DOKAN.fixed
+    assert "5.3.5" in DOKAN.fixed
+    assert "not CISA" in text or "not in the CISA" in text
+

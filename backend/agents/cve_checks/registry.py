@@ -16,6 +16,7 @@ from . import (
     contact_form_7,
     craft_cms,
     dependency_files,
+    dokan,
     drupal_install,
     estatik,
     gpustack_auth,
@@ -105,6 +106,7 @@ CHECKS: tuple[CveCheck, ...] = (
     php_nov2026.CHECK,
     nginx2root.CHECK,
     monai_label.CHECK,
+    dokan.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
