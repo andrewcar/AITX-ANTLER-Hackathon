@@ -20,6 +20,7 @@ from . import (
     drupal_install,
     estatik,
     gpustack_auth,
+    gradio,
     gravity_forms,
     gravity_forms_chunked,
     langflow,
@@ -117,6 +118,7 @@ CHECKS: tuple[CveCheck, ...] = (
     miniorange_otp.CHECK,
     simple_shopping_cart.CHECK,
     newsletters.CHECK,
+    gradio.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
