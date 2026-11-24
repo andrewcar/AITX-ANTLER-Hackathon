@@ -31,6 +31,7 @@ from . import (
     metabase,
     mlflow_gateway,
     monai_label,
+    mxchat,
     newsletters,
     nextjs,
     nextjs_nov2026,
@@ -117,6 +118,7 @@ CHECKS: tuple[CveCheck, ...] = (
     miniorange_otp.CHECK,
     simple_shopping_cart.CHECK,
     newsletters.CHECK,
+    mxchat.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
