@@ -21,6 +21,7 @@ from . import (
     estatik,
     givewp,
     gpustack_auth,
+    gradio,
     gravity_forms,
     gravity_forms_chunked,
     jetformbuilder,
@@ -127,6 +128,7 @@ CHECKS: tuple[CveCheck, ...] = (
     jetformbuilder.CHECK,
     ninja_forms.CHECK,
     givewp.CHECK,
+    gradio.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]

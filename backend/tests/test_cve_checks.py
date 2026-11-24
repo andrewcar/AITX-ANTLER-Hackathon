@@ -75,6 +75,7 @@ from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.simple_shopping_cart import CHECK as SIMPLE_SHOPPING_CART
 from agents.cve_checks.newsletters import CHECK as NEWSLETTERS
 from agents.cve_checks.givewp import CHECK as GIVEWP
+from agents.cve_checks.gradio import CHECK as GRADIO
 from agents.cve_checks.wpguppy_lite import CHECK as WPGUPPY_LITE
 from agents.cve_checks.mxchat import CHECK as MXCHAT
 from agents.cve_checks.jetformbuilder import CHECK as JETFORMBUILDER
@@ -530,6 +531,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
         path == "/wp-content/plugins/give/readme.txt" or "/plugins/give/" not in path
         for path in paths
     )
+    # Gradio always reads the public app config and nothing else.
+    assert paths.count("/config") == 1
+    assert "/run-history" not in blob
+    assert "/gradio_api/runs" not in blob
+    assert "/gradio_api/run-history" not in blob
+    assert all(path == "/config" or "gradio" not in path for path in paths)
 
 
 # --- PHP2Shell --------------------------------------------------------------
@@ -2957,30 +2964,31 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "givewp"
-    assert ids[-2] == "ninja-forms"
-    assert ids[-3] == "jetformbuilder"
-    assert ids[-4] == "mxchat"
-    assert ids[-5] == "wpguppy-lite"
-    assert ids[-6] == "newsletters"
-    assert ids[-7] == "simple-shopping-cart"
-    assert ids[-8] == "miniorange-otp"
-    assert ids[-9] == "soledad-theme"
-    assert ids[-10] == "dokan"
-    assert ids[-11] == "rtmedia"
-    assert ids[-12] == "monai-label"
-    assert ids[-13] == "nginx2root"
-    assert ids[-14] == "php-nov2026"
-    assert ids[-15] == "apache-roller"
-    assert ids[-16] == "redcap"
-    assert ids[-17] == "drupal-install"
-    assert ids[-18] == "litellm-guardrail"
-    assert ids[-19] == "mercury"
-    assert ids[-20] == "confluence-axis"
-    assert ids[-21] == "ultra-addons-cf7"
-    assert ids[-22] == "estatik"
-    assert ids[-23] == "automatorwp-webhooks"
-    assert ids[-24] == "bricksforge"
+    assert ids[-1] == "gradio"
+    assert ids[-2] == "givewp"
+    assert ids[-3] == "ninja-forms"
+    assert ids[-4] == "jetformbuilder"
+    assert ids[-5] == "mxchat"
+    assert ids[-6] == "wpguppy-lite"
+    assert ids[-7] == "newsletters"
+    assert ids[-8] == "simple-shopping-cart"
+    assert ids[-9] == "miniorange-otp"
+    assert ids[-10] == "soledad-theme"
+    assert ids[-11] == "dokan"
+    assert ids[-12] == "rtmedia"
+    assert ids[-13] == "monai-label"
+    assert ids[-14] == "nginx2root"
+    assert ids[-15] == "php-nov2026"
+    assert ids[-16] == "apache-roller"
+    assert ids[-17] == "redcap"
+    assert ids[-18] == "drupal-install"
+    assert ids[-19] == "litellm-guardrail"
+    assert ids[-20] == "mercury"
+    assert ids[-21] == "confluence-axis"
+    assert ids[-22] == "ultra-addons-cf7"
+    assert ids[-23] == "estatik"
+    assert ids[-24] == "automatorwp-webhooks"
+    assert ids[-25] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
@@ -2989,9 +2997,10 @@ def test_btcpay_registry_keeps_existing_checks():
         "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
         "soledad-theme", "miniorange-otp", "simple-shopping-cart", "newsletters",
         "wpguppy-lite", "mxchat", "jetformbuilder", "ninja-forms", "givewp",
+        "gradio",
     ):
         assert required in ids
-    assert ids[-25] == "btcpay-server"
+    assert ids[-26] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -3036,6 +3045,8 @@ def test_btcpay_registry_keeps_existing_checks():
     assert GIVEWP.cve == "CVE-2026-104405 / CVE-2026-82675"
     assert "4.18.0" in GIVEWP.fixed
     assert "4.17.0" in GIVEWP.fixed
+    assert GRADIO.agent == "recon"
+    assert GRADIO.cve == "CVE-2026-134825"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -12910,3 +12921,259 @@ def test_givewp_source_is_one_readme_get():
     assert "registration" in GIVEWP.does_not_send
     assert "login" in GIVEWP.does_not_send
     assert "4.18.0" in GIVEWP.fixed
+
+
+# --- Gradio (CVE-2026-134825) -----------------------------------------------
+
+GRADIO_CONFIG = "/config"
+_GRADIO_EVIDENCE = (
+    "affected only if ssr_mode is enabled; the operator's HF token can be exposed"
+)
+_GRADIO_BANNED_PATHS = (
+    "/run-history",
+    "/gradio_api/runs",
+    "/gradio_api/run-history",
+    "/hf_token",
+    "token",
+)
+
+
+def _gradio_config(version="omit"):
+    doc = {
+        "api_prefix": "/gradio_api",
+        "mode": "blocks",
+        "app_id": 1,
+        "components": [],
+        "protocol": "sse_v3",
+        "title": "Gradio",
+    }
+    if version != "omit":
+        doc["version"] = version
+    return json.dumps(doc)
+
+
+def _assert_gradio_one_get(transport):
+    assert transport.calls == [("GET", GRADIO_CONFIG, None, False)]
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    assert "?" not in blob
+    for banned in _GRADIO_BANNED_PATHS:
+        assert banned not in blob
+    assert "host" not in blob
+
+
+@pytest.mark.parametrize("version,flagged", [
+    ("6.26.9", False),
+    ("6.27.0", True),
+    ("6.31.4", True),
+    ("6.32.0", False),
+])
+def test_gradio_config_version_matrix(monkeypatch, version, flagged):
+    transport = Transport()
+    transport.routes[GRADIO_CONFIG] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": _gradio_config(version),
+    }
+    _install(monkeypatch, transport)
+    found = GRADIO.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_gradio_one_get(transport)
+    if flagged:
+        assert len(found) == 1
+        assert found[0]["severity"] == "high"
+        assert found[0]["layer"] == "recon"
+        assert found[0]["check"]["match"] == f"gradio:{version}"
+        assert "likely vulnerable" in found[0]["title"]
+        assert UNCONFIRMED in found[0]["title"]
+        assert UNCONFIRMED in found[0]["evidence"]
+        assert "CVE-2026-134825" in found[0]["evidence"]
+        assert _GRADIO_EVIDENCE in found[0]["evidence"]
+        assert "Not in the CISA KEV catalog" in found[0]["evidence"]
+        assert "No exploitation reported" in found[0]["evidence"]
+        assert "6.32.0" in found[0]["fix"]
+        blob = json.dumps(found).lower()
+        assert "likely vulnerable" in blob
+        assert "proven" not in blob
+        assert "/run-history" not in blob
+        assert "host: localhost" not in blob
+    else:
+        assert found == []
+        blob = json.dumps(found).lower()
+        assert "likely vulnerable" not in blob
+
+
+def test_gradio_affected_helper_matches_the_advisory_range():
+    from agents.cve_checks.gradio import affected
+    from agents.cve_checks.versions import parse_dotted
+
+    assert affected(parse_dotted("6.26.9")) is False
+    assert affected(parse_dotted("6.27.0")) is True
+    assert affected(parse_dotted("6.31.4")) is True
+    assert affected(parse_dotted("6.32.0")) is False
+    assert affected(parse_dotted("6.32.1")) is False
+    assert affected((6, 27)) is False
+
+
+def test_gradio_missing_version_is_unknown(monkeypatch):
+    transport = Transport()
+    transport.routes[GRADIO_CONFIG] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": _gradio_config("omit"),
+    }
+    _install(monkeypatch, transport)
+    found = GRADIO.run({}, _ctx())
+    _assert_gradio_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "gradio:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["evidence"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "not a vulnerability guess" in found[0]["evidence"].lower()
+    assert "CVE-2026-134825" in found[0]["evidence"]
+
+
+def test_gradio_non_gradio_html_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[GRADIO_CONFIG] = {
+        "status": 200,
+        "content_type": "text/html",
+        "body": (
+            "<!doctype html><html><head><title>Not Gradio</title></head>"
+            "<body>version 6.31.4 api_prefix /gradio_api</body></html>"
+        ),
+    }
+    _install(monkeypatch, transport)
+    assert GRADIO.run({}, _ctx()) == []
+    _assert_gradio_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not json",
+    '{"version":"6.31.4"}',
+    '{"version":"6.27.0","name":"other-app"}',
+    '{"api_prefix":"/api","mode":"blocks","components":[],"protocol":"sse_v3","version":"6.31.4"}',
+])
+def test_gradio_non_config_json_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[GRADIO_CONFIG] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert GRADIO.run({}, _ctx()) == []
+    _assert_gradio_one_get(transport)
+
+
+def test_gradio_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[GRADIO_CONFIG] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert GRADIO.run({}, _ctx()) == []
+    _assert_gradio_one_get(transport)
+
+
+def test_gradio_unparsed_version_is_unknown_not_a_guess(monkeypatch):
+    transport = Transport()
+    transport.routes[GRADIO_CONFIG] = {
+        "status": 200,
+        "content_type": "application/json",
+        "body": _gradio_config("6.31.4rc1"),
+    }
+    _install(monkeypatch, transport)
+    found = GRADIO.run({}, _ctx())
+    _assert_gradio_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["check"]["match"] == "gradio:unknown"
+    assert "likely vulnerable" not in json.dumps(found).lower()
+
+
+def test_gradio_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": [], "headers": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        seen["headers"].append({name.lower(): value for name, value in req.header_items()})
+        return _Resp(
+            body=_gradio_config("6.31.4").encode(),
+            headers=[("content-type", "application/json")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_gradio_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("recon"):
+            found = GRADIO.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    expected = urlparse(recon.resolve("http://127.0.0.1:8081" + GRADIO_CONFIG))
+    assert sent.path == GRADIO_CONFIG
+    assert sent.query == ""
+    assert sent.scheme == expected.scheme
+    assert sent.hostname == expected.hostname
+    assert sent.hostname != "localhost"
+    headers = seen["headers"][0]
+    assert "host" not in headers
+    assert all("localhost" not in str(value).lower() for value in headers.values())
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "gradio:6.31.4"
+    assert _GRADIO_EVIDENCE in found[0]["evidence"]
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "recon"
+    assert GRADIO_CONFIG in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
+    assert "/run-history" not in rows[-1]["url"]
+
+
+def test_gradio_check_source_is_one_config_get():
+    text = (ROOT / "agents" / "cve_checks" / "gradio.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, CONFIG" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "requests." not in text
+    assert GRADIO.id == "gradio"
+    assert GRADIO.cve == "CVE-2026-134825"
+    assert GRADIO.agent == "recon"
+    assert "Host header" in GRADIO.does_not_send
+    assert "run-history" in GRADIO.does_not_send
+    assert "token endpoint" in GRADIO.does_not_send
+
+
+def test_gradio_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_gradio_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                GRADIO.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
