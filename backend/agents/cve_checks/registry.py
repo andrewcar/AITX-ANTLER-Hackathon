@@ -19,6 +19,7 @@ from . import (
     dokan,
     drupal_install,
     estatik,
+    givewp,
     gpustack_auth,
     gravity_forms,
     gravity_forms_chunked,
@@ -125,6 +126,7 @@ CHECKS: tuple[CveCheck, ...] = (
     mxchat.CHECK,
     jetformbuilder.CHECK,
     ninja_forms.CHECK,
+    givewp.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
