@@ -73,6 +73,7 @@ from agents.cve_checks.miniorange_otp import CHECK as MINIORANGE_OTP
 from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.simple_shopping_cart import CHECK as SIMPLE_SHOPPING_CART
 from agents.cve_checks.newsletters import CHECK as NEWSLETTERS
+from agents.cve_checks.wpguppy_lite import CHECK as WPGUPPY_LITE
 from agents.cve_checks.mxchat import CHECK as MXCHAT
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
@@ -361,6 +362,7 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
     assert paths.count("/wp-content/plugins/miniorange-otp-verification/readme.txt") == 1
     assert paths.count("/wp-content/plugins/newsletters-lite/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/wpguppy-lite/readme.txt") == 1
     assert paths.count("/wp-content/plugins/mxchat-basic/readme.txt") == 1
     assert all(
         path == "/wp-content/plugins/mxchat-basic/readme.txt" or "mxchat" not in path
@@ -2939,25 +2941,26 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
     assert ids[-1] == "mxchat"
-    assert ids[-2] == "newsletters"
-    assert ids[-3] == "simple-shopping-cart"
-    assert ids[-4] == "miniorange-otp"
-    assert ids[-5] == "soledad-theme"
-    assert ids[-6] == "dokan"
-    assert ids[-7] == "rtmedia"
-    assert ids[-8] == "monai-label"
-    assert ids[-9] == "nginx2root"
-    assert ids[-10] == "php-nov2026"
-    assert ids[-11] == "apache-roller"
-    assert ids[-12] == "redcap"
-    assert ids[-13] == "drupal-install"
-    assert ids[-14] == "litellm-guardrail"
-    assert ids[-15] == "mercury"
-    assert ids[-16] == "confluence-axis"
-    assert ids[-17] == "ultra-addons-cf7"
-    assert ids[-18] == "estatik"
-    assert ids[-19] == "automatorwp-webhooks"
-    assert ids[-20] == "bricksforge"
+    assert ids[-2] == "wpguppy-lite"
+    assert ids[-3] == "newsletters"
+    assert ids[-4] == "simple-shopping-cart"
+    assert ids[-5] == "miniorange-otp"
+    assert ids[-6] == "soledad-theme"
+    assert ids[-7] == "dokan"
+    assert ids[-8] == "rtmedia"
+    assert ids[-9] == "monai-label"
+    assert ids[-10] == "nginx2root"
+    assert ids[-11] == "php-nov2026"
+    assert ids[-12] == "apache-roller"
+    assert ids[-13] == "redcap"
+    assert ids[-14] == "drupal-install"
+    assert ids[-15] == "litellm-guardrail"
+    assert ids[-16] == "mercury"
+    assert ids[-17] == "confluence-axis"
+    assert ids[-18] == "ultra-addons-cf7"
+    assert ids[-19] == "estatik"
+    assert ids[-20] == "automatorwp-webhooks"
+    assert ids[-21] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
@@ -2965,10 +2968,10 @@ def test_btcpay_registry_keeps_existing_checks():
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
         "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
         "soledad-theme", "miniorange-otp", "simple-shopping-cart", "newsletters",
-        "mxchat",
+        "wpguppy-lite", "mxchat",
     ):
         assert required in ids
-    assert ids[-21] == "btcpay-server"
+    assert ids[-22] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2997,6 +3000,8 @@ def test_btcpay_registry_keeps_existing_checks():
     assert MINIORANGE_OTP.agent == "auth"
     assert MINIORANGE_OTP.cve == "CVE-2026-129073"
     assert NEWSLETTERS.agent == "misconfig"
+    assert WPGUPPY_LITE.agent == "misconfig"
+    assert WPGUPPY_LITE.cve == "CVE-2026-107654"
     assert MXCHAT.agent == "misconfig"
     assert MXCHAT.cve == "CVE-2026-110662"
     assert MXCHAT.id == "mxchat"
@@ -11755,6 +11760,213 @@ def test_newsletters_audited_get_has_no_body(monkeypatch):
     assert "body" not in rows[-1]
     assert urlparse(rows[-1]["url"]).query == ""
 
+
+# --- WPGuppy Lite (CVE-2026-107654) -----------------------------------------
+
+WPGUPPY_README = "/wp-content/plugins/wpguppy-lite/readme.txt"
+
+
+def _wpguppy_readme(tag=None):
+    lines = [
+        "=== One to one user Chat by WPGuppy ===",
+        "Contributors: amentotechpvtltd",
+        "Requires at least: 6.0",
+        "Tested up to: 7.1",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "WPGuppy is a WordPress chat plugin.",
+        "",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _assert_wpguppy_one_get(transport):
+    assert transport.calls == [("GET", WPGUPPY_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    blob = transport.calls[0][1].lower()
+    assert "userid" not in blob
+    for banned in ("select ", "union ", "sleep(", "benchmark(", "'", '"', "--"):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag", ["1.1.6", "1.1.5", "1.1.0", "1.1", "1.0"])
+def test_wpguppy_affected_version_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200, "content_type": "text/plain", "body": _wpguppy_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = WPGUPPY_LITE.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_wpguppy_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == f"wpguppy-lite:{tag}"
+    assert "likely vulnerable" in found[0]["title"].lower()
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "CVE-2026-107654" in found[0]["evidence"]
+    assert "1.1.7" in found[0]["fix"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "userId" in found[0]["evidence"]
+    blob = json.dumps(found).lower()
+    assert "proven" not in blob
+    assert "select " not in blob
+    assert "union " not in blob
+    assert "sleep(" not in blob
+
+
+@pytest.mark.parametrize("tag", ["1.1.7", "1.1.8", "1.2.0", "2.0.0"])
+def test_wpguppy_fixed_version_is_not_detected(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200, "content_type": "text/plain", "body": _wpguppy_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    assert WPGUPPY_LITE.run({}, _ctx()) == []
+    _assert_wpguppy_one_get(transport)
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "latest", "1.1.6beta"])
+def test_wpguppy_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wpguppy_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = WPGUPPY_LITE.run({}, _ctx())
+    _assert_wpguppy_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "wpguppy-lite:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+    assert "CVE-2026-107654" in found[0]["evidence"]
+
+
+def test_wpguppy_changelog_without_stable_tag_is_unknown(monkeypatch):
+    body = _wpguppy_readme(None) + "== Changelog ==\n= 1.1.6 =\n* older notes\n"
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = WPGUPPY_LITE.run({}, _ctx())
+    _assert_wpguppy_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "wpguppy-lite:unknown"
+    assert "likely vulnerable" not in json.dumps(found).lower()
+
+
+def test_wpguppy_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert WPGUPPY_LITE.run({}, _ctx()) == []
+    _assert_wpguppy_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 1.1.6\n",
+    "<!doctype html><html><head><title>WPGuppy</title></head>"
+    "<body>One to one user Chat by WPGuppy Stable tag: 1.1.6</body></html>",
+    "=== Some Other Plugin ===\nContributors: amentotechpvtltd\nStable tag: 1.1.6\n",
+    "=== WPGuppy ===\nContributors: someone-else\nStable tag: 1.1.6\n",
+])
+def test_wpguppy_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert WPGUPPY_LITE.run({}, _ctx()) == []
+    _assert_wpguppy_one_get(transport)
+
+
+def test_wpguppy_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        return _Resp(
+            body=_wpguppy_readme("1.1.6").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_wpguppy_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = WPGUPPY_LITE.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == WPGUPPY_README
+    assert sent.query == ""
+    assert "userid" not in sent.path.lower()
+    assert "userId" not in seen["urls"][0]
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "wpguppy-lite:1.1.6"
+    assert "likely vulnerable" in found[0]["title"].lower()
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert WPGUPPY_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "userid" not in rows[-1]["url"].lower()
+    assert urlparse(rows[-1]["url"]).query == ""
+    text = (ROOT / "agents" / "cve_checks" / "wpguppy_lite.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "requests." not in text
+    assert "http.client" not in text
+    assert "userId" in WPGUPPY_LITE.does_not_send
+    assert "SQL" in WPGUPPY_LITE.does_not_send
+    for banned in ("UNION SELECT", "SLEEP(", "guppy_guest_account", "userType"):
+        assert banned not in text
+
+
+def test_wpguppy_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_wpguppy_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                WPGUPPY_LITE.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
 
 # --- MxChat (CVE-2026-110662) -----------------------------------------------
 

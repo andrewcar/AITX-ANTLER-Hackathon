@@ -33,6 +33,7 @@ from . import (
     monai_label,
     mxchat,
     newsletters,
+    wpguppy_lite,
     nextjs,
     nextjs_nov2026,
     nginx2root,
@@ -118,6 +119,7 @@ CHECKS: tuple[CveCheck, ...] = (
     miniorange_otp.CHECK,
     simple_shopping_cart.CHECK,
     newsletters.CHECK,
+    wpguppy_lite.CHECK,
     mxchat.CHECK,
 )
 
