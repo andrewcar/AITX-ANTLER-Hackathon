@@ -38,6 +38,7 @@ from agents.cve_checks.ai_engine_upload import CHECK as AI_ENGINE_UPLOAD
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.craft_cms import CHECK as CRAFT_CMS
 from agents.cve_checks.wpforo import CHECK as WPFORO
+from agents.cve_checks.ninja_forms import CHECK as NINJA_FORMS
 from agents.cve_checks.ninja_forms_uploads import CHECK as NINJA_FORMS_UPLOADS
 from agents.cve_checks.apache_mod_http2 import CHECK as APACHE_MOD_HTTP2
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
@@ -375,6 +376,8 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
         for path in paths
     )
     assert "wp-config" not in blob.lower()
+    # Core Ninja Forms readme only. The File Uploads add-on stays quiet here.
+    assert paths.count("/wp-content/plugins/ninja-forms/readme.txt") == 1
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     # SliceWP only probes readme when the plugin path was already in crawled HTML.
     assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
@@ -2947,28 +2950,29 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "jetformbuilder"
-    assert ids[-2] == "mxchat"
-    assert ids[-3] == "wpguppy-lite"
-    assert ids[-4] == "newsletters"
-    assert ids[-5] == "simple-shopping-cart"
-    assert ids[-6] == "miniorange-otp"
-    assert ids[-7] == "soledad-theme"
-    assert ids[-8] == "dokan"
-    assert ids[-9] == "rtmedia"
-    assert ids[-10] == "monai-label"
-    assert ids[-11] == "nginx2root"
-    assert ids[-12] == "php-nov2026"
-    assert ids[-13] == "apache-roller"
-    assert ids[-14] == "redcap"
-    assert ids[-15] == "drupal-install"
-    assert ids[-16] == "litellm-guardrail"
-    assert ids[-17] == "mercury"
-    assert ids[-18] == "confluence-axis"
-    assert ids[-19] == "ultra-addons-cf7"
-    assert ids[-20] == "estatik"
-    assert ids[-21] == "automatorwp-webhooks"
-    assert ids[-22] == "bricksforge"
+    assert ids[-1] == "ninja-forms"
+    assert ids[-2] == "jetformbuilder"
+    assert ids[-3] == "mxchat"
+    assert ids[-4] == "wpguppy-lite"
+    assert ids[-5] == "newsletters"
+    assert ids[-6] == "simple-shopping-cart"
+    assert ids[-7] == "miniorange-otp"
+    assert ids[-8] == "soledad-theme"
+    assert ids[-9] == "dokan"
+    assert ids[-10] == "rtmedia"
+    assert ids[-11] == "monai-label"
+    assert ids[-12] == "nginx2root"
+    assert ids[-13] == "php-nov2026"
+    assert ids[-14] == "apache-roller"
+    assert ids[-15] == "redcap"
+    assert ids[-16] == "drupal-install"
+    assert ids[-17] == "litellm-guardrail"
+    assert ids[-18] == "mercury"
+    assert ids[-19] == "confluence-axis"
+    assert ids[-20] == "ultra-addons-cf7"
+    assert ids[-21] == "estatik"
+    assert ids[-22] == "automatorwp-webhooks"
+    assert ids[-23] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
@@ -2976,10 +2980,10 @@ def test_btcpay_registry_keeps_existing_checks():
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
         "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
         "soledad-theme", "miniorange-otp", "simple-shopping-cart", "newsletters",
-        "wpguppy-lite", "mxchat", "jetformbuilder",
+        "wpguppy-lite", "mxchat", "jetformbuilder", "ninja-forms",
     ):
         assert required in ids
-    assert ids[-23] == "btcpay-server"
+    assert ids[-24] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -3015,6 +3019,11 @@ def test_btcpay_registry_keeps_existing_checks():
     assert MXCHAT.id == "mxchat"
     assert JETFORMBUILDER.agent == "misconfig"
     assert JETFORMBUILDER.cve == "CVE-2026-4373"
+    assert NINJA_FORMS.agent == "misconfig"
+    assert NINJA_FORMS.id == "ninja-forms"
+    assert NINJA_FORMS.id != NINJA_FORMS_UPLOADS.id
+    assert "CVE-2026-109997" in NINJA_FORMS.cve
+    assert "CVE-2026-110899" in NINJA_FORMS.cve
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -11771,6 +11780,7 @@ def test_newsletters_audited_get_has_no_body(monkeypatch):
     assert urlparse(rows[-1]["url"]).query == ""
 
 
+
 # --- WPGuppy Lite (CVE-2026-107654) -----------------------------------------
 
 WPGUPPY_README = "/wp-content/plugins/wpguppy-lite/readme.txt"
@@ -12430,3 +12440,231 @@ def test_jetformbuilder_check_source_is_one_readme_get():
     assert "Media Field" in JETFORMBUILDER.does_not_send
     assert "form" in JETFORMBUILDER.does_not_send.lower()
     assert "No request body" in JETFORMBUILDER.sends
+
+
+# --- Ninja Forms (CVE-2026-109997 / CVE-2026-110899) ------------------------
+
+NINJA_FORMS_README = "/wp-content/plugins/ninja-forms/readme.txt"
+
+
+def _ninja_forms_readme(tag=None):
+    lines = [
+        "=== Ninja Forms - Contact Form Builder with Calculators, "
+        "Quizzes, Signatures & AI Form Builder ===",
+        "Contributors: wpninjasllc, kstover",
+        "Requires at least: 6.9",
+        "Tested up to: 7.1",
+        "Free WordPress form builder.",
+    ]
+    if tag is not None:
+        lines.insert(4, f"Stable tag: {tag}")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_ninja_forms_one_get(transport):
+    assert transport.calls == [("GET", NINJA_FORMS_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    blob = transport.calls[0][1].lower()
+    for banned in (
+        "formdata", "nf_ajax", "admin-ajax", "/wp-admin",
+        "ninja-forms-uploads", "upload",
+    ):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag", ["3.15.5", "3.15.4", "3.15", "3.0.0", "1.0"])
+def test_ninja_forms_vulnerable_version_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200, "content_type": "text/plain", "body": _ninja_forms_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_ninja_forms_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == f"ninja-forms:{tag}"
+    assert "likely vulnerable" in found[0]["title"].lower()
+    assert "medium-high" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-109997" in found[0]["evidence"]
+    assert "CVE-2026-110899" in found[0]["evidence"]
+    assert "collision" in found[0]["evidence"].lower()
+    assert "formData.extra" in found[0]["evidence"]
+    assert "3.15.6" in found[0]["fix"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "cisa kev" not in found[0]["title"].lower()
+    blob = json.dumps(found).lower()
+    assert "proven" not in blob
+    assert "<script" not in blob
+    assert "ninja-forms-uploads" not in blob
+
+
+@pytest.mark.parametrize("tag", ["3.15.6", "3.15.7", "3.16.2", "4.0.0"])
+def test_ninja_forms_fixed_version_is_not_detected(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200, "content_type": "text/plain", "body": _ninja_forms_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS.run({}, _ctx()) == []
+    _assert_ninja_forms_one_get(transport)
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "3", "3.15.5-rc1"])
+def test_ninja_forms_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ninja_forms_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS.run({}, _ctx())
+    _assert_ninja_forms_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "ninja-forms:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["evidence"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+    assert found[0]["severity"] != "high"
+
+
+def test_ninja_forms_changelog_without_stable_tag_is_unknown(monkeypatch):
+    body = (
+        "=== Ninja Forms ===\n"
+        "Contributors: kstover\n"
+        "Requires at least: 6.9\n"
+        "\n"
+        "== Changelog ==\n"
+        "= 3.15.5 (28 September 2026) =\n"
+        "* older note that must not be treated as the installed version\n"
+    )
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS.run({}, _ctx())
+    _assert_ninja_forms_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["check"]["match"] == "ninja-forms:unknown"
+    assert "likely vulnerable" not in json.dumps(found).lower()
+
+
+def test_ninja_forms_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS.run({}, _ctx()) == []
+    _assert_ninja_forms_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 3.15.5\n",
+    "<!doctype html><html><head><title>Ninja Forms</title></head>"
+    "<body>Stable tag: 3.15.5</body></html>",
+    "=== Some Other Plugin ===\nContributors: kstover\nStable tag: 3.15.5\n",
+    "=== Ninja Forms - File Uploads ===\nContributors: kstover\n"
+    "Stable tag: 3.3.36\n",
+])
+def test_ninja_forms_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS.run({}, _ctx()) == []
+    _assert_ninja_forms_one_get(transport)
+
+
+def test_ninja_forms_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": [], "headers": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        seen["headers"].append({k.lower(): v for k, v in req.header_items()})
+        return _Resp(
+            body=_ninja_forms_readme("3.15.5").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_ninja_forms_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = NINJA_FORMS.run({}, _ctx(session={"cookie": "do-not-send"}))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == NINJA_FORMS_README
+    assert sent.query == ""
+    assert "cookie" not in seen["headers"][0]
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "ninja-forms:3.15.5"
+    assert "likely vulnerable" in found[0]["title"].lower()
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert NINJA_FORMS_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
+    assert "formdata" not in rows[-1]["url"].lower()
+
+
+def test_ninja_forms_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_ninja_forms_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                NINJA_FORMS.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_ninja_forms_check_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "ninja_forms.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "requests." not in text
+    assert NINJA_FORMS_README in text
+    assert "ninja-forms-uploads/changelog" not in text
+    assert NINJA_FORMS.id == "ninja-forms"
+    assert NINJA_FORMS.cve == "CVE-2026-109997 / CVE-2026-110899"
+    assert "3.15.6" in NINJA_FORMS.fixed
+    assert "through 3.15.5" in NINJA_FORMS.fixed
+    assert "collision" in text.lower()
+    assert "not CISA" in text or "not in the CISA" in text
+    assert "Patchstack" in text
+    for banned in ("<?php", "php://", "../", "multipart", "<script"):
+        assert banned not in text

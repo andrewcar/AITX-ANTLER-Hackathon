@@ -13,7 +13,7 @@ A consent-first, non-destructive, allowlist-gated multi-agent web-vulnerability 
 - **Frontend:** a single-file vanilla HTML/CSS/JS dashboard — no build step.
 - **Optional triage:** `openai` SDK pointed at a Featherless hosted model (off unless `FEATHERLESS_API_KEY` is set).
 - **Storage:** an append-only JSONL audit log. No database.
-- **Tests:** `pytest` (1113 tests).
+- **Tests:** `pytest` (1137 tests).
 
 ## Architecture
 
@@ -128,6 +128,7 @@ These checks live in `backend/agents/cve_checks/` as a registry (`id`, CVE, agen
 | `wpguppy-lite` (misconfig) | CVE-2026-107654 | One GET `/wp-content/plugins/wpguppy-lite/readme.txt` (WordPress.org slug `wpguppy-lite`; One to one user Chat by WPGuppy). Critical, version unconfirmed / likely vulnerable, when that file is the plugin readme and the Stable tag is 1.1.6 or lower (fixed in 1.1.7). Unauthenticated SQL injection via the `userId` parameter (CWE-89). Patchstack CVSS 9.3 and known-exploited (Patchstack label, not CISA KEV); NVD and Wordfence CVSS 7.5. Info (unknown) when the readme is the plugin but the Stable tag is missing or unparseable. A missing file or a non-plugin body is not detected. | Never sends the `userId` parameter or any SQL. No query string, no POST, no request body, no forged headers, no upload, no auth attempt, no write, and no malformed input. Exactly one read-only GET of the plugin readme. |
 | `mxchat` (misconfig) | CVE-2026-110662 | One GET `/wp-content/plugins/mxchat-basic/readme.txt` (WordPress.org slug). High, medium-high (Patchstack medium priority CVSS 7.1; NVD and Wordfence CVSS 7.2), version unconfirmed / likely vulnerable, when the Stable tag is 3.2.25 or lower: unauthenticated stored DOM-based cross-site scripting in visitor rating feedback, which runs when an administrator views that feedback. Fixed in 3.2.26. Likely vulnerable only when that tag is parsed and in range. Info (unknown) when the readme is MxChat but the Stable tag cannot be parsed. A missing file, a non-plugin body, or 3.2.26 and later are not detected. The exploited label is Patchstack's (DugganUSA / VulnCheck cite that Patchstack entry); not CISA KEV (catalogVersion 2026.11.23 checked 24 November 2026). | Never submits chatbot feedback or any script. No POST, no rating or transcript request, no admin-ajax action, no upload, no authentication attempt, no write, and no malformed input. Never more than the single `readme.txt` GET. |
 | `jetformbuilder` (misconfig) | CVE-2026-4373 | One GET `/wp-content/plugins/jetformbuilder/readme.txt`. High, version unconfirmed / likely vulnerable, when that file is the JetFormBuilder readme and the Stable tag is 3.5.6.2 or lower (fixed in 3.5.6.3; CWE-36, CVSS 7.5). Unauthenticated arbitrary file read through the Media Field; a configured Send Email attachment can expose local files such as wp-config.php, which this check does not confirm. Patchstack known-exploited (Patchstack telemetry, not CISA KEV). Info (unknown) when the readme is JetFormBuilder but the Stable tag cannot be parsed. 3.5.6.3 and later, a missing file, and a non-plugin body are not detected. | Never submits a form. Never requests the Media Field, an upload endpoint, `admin-ajax.php`, a REST route, or `wp-config.php`. No POST, no request body, no exploit payload, no forged header, no upload, no auth attempt, no write, and no malformed input. Exactly one read-only GET of the plugin readme. |
+| `ninja-forms` (misconfig) | CVE-2026-109997 / CVE-2026-110899 | One GET `/wp-content/plugins/ninja-forms/readme.txt`. High (medium-high: Patchstack medium priority, CVSS 7.1 HIGH; Wordfence CVSS 7.2 HIGH), version unconfirmed / likely vulnerable, when that file is the Ninja Forms readme and the Stable tag is 3.15.5 or lower (fixed in 3.15.6, 15 October 2026). One bug, two CVE records: unauthenticated stored XSS via `formData.extra`. Patchstack notes a possible CVE collision (CVE-2026-109997 describes the same issue as CVE-2026-110899; 3.15.6 resolves both) and marks it known-exploited (Patchstack label, not CISA KEV). Info (unknown) when the readme is Ninja Forms but the Stable tag is missing or unparseable. A 404, a non-plugin body, or 3.15.6 and later is not detected. Separate from `ninja-forms-uploads`. | Never submits a form. No POST, no `formData` body, no upload, no write, no forged header, and no malformed input. Exactly one read-only GET of the core plugin readme. Does not request the File Uploads add-on. |
 
 The Brotli body is a fixed encoding of `{"vulnswarm":"ok"}` (22 bytes). The `brotli` package is only used by tests to decode that constant; the scanner does not compress at request time.
 
@@ -159,7 +160,7 @@ uvicorn main:app --port 8000
 
 Open `dashboard/index.html`, sign in as `erwin@local` / `demo` (or `andrew@local` / `demo`), set the target, and press **SCAN**.
 
-Tests (1113 tests in `backend/tests/`):
+Tests (1137 tests in `backend/tests/`):
 
 ```bash
 cd backend && python -m pytest tests/ -q
