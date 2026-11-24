@@ -38,6 +38,7 @@ from agents.cve_checks.ai_engine_upload import CHECK as AI_ENGINE_UPLOAD
 from agents.cve_checks.commerce_core import CHECK as COMMERCE_CORE
 from agents.cve_checks.craft_cms import CHECK as CRAFT_CMS
 from agents.cve_checks.wpforo import CHECK as WPFORO
+from agents.cve_checks.ninja_forms import CHECK as NINJA_FORMS
 from agents.cve_checks.ninja_forms_uploads import CHECK as NINJA_FORMS_UPLOADS
 from agents.cve_checks.apache_mod_http2 import CHECK as APACHE_MOD_HTTP2
 from agents.cve_checks.supabase_storage import CHECK as SUPABASE_STORAGE
@@ -73,7 +74,11 @@ from agents.cve_checks.miniorange_otp import CHECK as MINIORANGE_OTP
 from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.simple_shopping_cart import CHECK as SIMPLE_SHOPPING_CART
 from agents.cve_checks.newsletters import CHECK as NEWSLETTERS
+from agents.cve_checks.givewp import CHECK as GIVEWP
 from agents.cve_checks.gradio import CHECK as GRADIO
+from agents.cve_checks.wpguppy_lite import CHECK as WPGUPPY_LITE
+from agents.cve_checks.mxchat import CHECK as MXCHAT
+from agents.cve_checks.jetformbuilder import CHECK as JETFORMBUILDER
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
 from agents.cve_checks.rtmedia import CHECK as RTMEDIA
@@ -361,6 +366,20 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
     assert paths.count("/wp-content/plugins/miniorange-otp-verification/readme.txt") == 1
     assert paths.count("/wp-content/plugins/newsletters-lite/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/wpguppy-lite/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/mxchat-basic/readme.txt") == 1
+    assert all(
+        path == "/wp-content/plugins/mxchat-basic/readme.txt" or "mxchat" not in path
+        for path in paths
+    )
+    assert paths.count("/wp-content/plugins/jetformbuilder/readme.txt") == 1
+    assert all(
+        path == "/wp-content/plugins/jetformbuilder/readme.txt" or "jetformbuilder" not in path
+        for path in paths
+    )
+    assert "wp-config" not in blob.lower()
+    # Core Ninja Forms readme only. The File Uploads add-on stays quiet here.
+    assert paths.count("/wp-content/plugins/ninja-forms/readme.txt") == 1
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     # SliceWP only probes readme when the plugin path was already in crawled HTML.
     assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
@@ -506,6 +525,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
         for path in paths
     )
     assert paths.count("/wp-content/plugins/wordpress-simple-paypal-shopping-cart/readme.txt") == 1
+    # GiveWP always reads the public plugin readme and nothing else.
+    assert paths.count("/wp-content/plugins/give/readme.txt") == 1
+    assert all(
+        path == "/wp-content/plugins/give/readme.txt" or "/plugins/give/" not in path
+        for path in paths
+    )
     # Gradio always reads the public app config and nothing else.
     assert paths.count("/config") == 1
     assert "/run-history" not in blob
@@ -2940,25 +2965,30 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
     assert ids[-1] == "gradio"
-    assert ids[-2] == "newsletters"
-    assert ids[-3] == "simple-shopping-cart"
-    assert ids[-4] == "miniorange-otp"
-    assert ids[-5] == "soledad-theme"
-    assert ids[-6] == "dokan"
-    assert ids[-7] == "rtmedia"
-    assert ids[-8] == "monai-label"
-    assert ids[-9] == "nginx2root"
-    assert ids[-10] == "php-nov2026"
-    assert ids[-11] == "apache-roller"
-    assert ids[-12] == "redcap"
-    assert ids[-13] == "drupal-install"
-    assert ids[-14] == "litellm-guardrail"
-    assert ids[-15] == "mercury"
-    assert ids[-16] == "confluence-axis"
-    assert ids[-17] == "ultra-addons-cf7"
-    assert ids[-18] == "estatik"
-    assert ids[-19] == "automatorwp-webhooks"
-    assert ids[-20] == "bricksforge"
+    assert ids[-2] == "givewp"
+    assert ids[-3] == "ninja-forms"
+    assert ids[-4] == "jetformbuilder"
+    assert ids[-5] == "mxchat"
+    assert ids[-6] == "wpguppy-lite"
+    assert ids[-7] == "newsletters"
+    assert ids[-8] == "simple-shopping-cart"
+    assert ids[-9] == "miniorange-otp"
+    assert ids[-10] == "soledad-theme"
+    assert ids[-11] == "dokan"
+    assert ids[-12] == "rtmedia"
+    assert ids[-13] == "monai-label"
+    assert ids[-14] == "nginx2root"
+    assert ids[-15] == "php-nov2026"
+    assert ids[-16] == "apache-roller"
+    assert ids[-17] == "redcap"
+    assert ids[-18] == "drupal-install"
+    assert ids[-19] == "litellm-guardrail"
+    assert ids[-20] == "mercury"
+    assert ids[-21] == "confluence-axis"
+    assert ids[-22] == "ultra-addons-cf7"
+    assert ids[-23] == "estatik"
+    assert ids[-24] == "automatorwp-webhooks"
+    assert ids[-25] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
@@ -2966,10 +2996,11 @@ def test_btcpay_registry_keeps_existing_checks():
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
         "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
         "soledad-theme", "miniorange-otp", "simple-shopping-cart", "newsletters",
+        "wpguppy-lite", "mxchat", "jetformbuilder", "ninja-forms", "givewp",
         "gradio",
     ):
         assert required in ids
-    assert ids[-21] == "btcpay-server"
+    assert ids[-26] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2998,6 +3029,22 @@ def test_btcpay_registry_keeps_existing_checks():
     assert MINIORANGE_OTP.agent == "auth"
     assert MINIORANGE_OTP.cve == "CVE-2026-129073"
     assert NEWSLETTERS.agent == "misconfig"
+    assert WPGUPPY_LITE.agent == "misconfig"
+    assert WPGUPPY_LITE.cve == "CVE-2026-107654"
+    assert MXCHAT.agent == "misconfig"
+    assert MXCHAT.cve == "CVE-2026-110662"
+    assert MXCHAT.id == "mxchat"
+    assert JETFORMBUILDER.agent == "misconfig"
+    assert JETFORMBUILDER.cve == "CVE-2026-4373"
+    assert NINJA_FORMS.agent == "misconfig"
+    assert NINJA_FORMS.id == "ninja-forms"
+    assert NINJA_FORMS.id != NINJA_FORMS_UPLOADS.id
+    assert "CVE-2026-109997" in NINJA_FORMS.cve
+    assert "CVE-2026-110899" in NINJA_FORMS.cve
+    assert GIVEWP.agent == "auth"
+    assert GIVEWP.cve == "CVE-2026-104405 / CVE-2026-82675"
+    assert "4.18.0" in GIVEWP.fixed
+    assert "4.17.0" in GIVEWP.fixed
     assert GRADIO.agent == "recon"
     assert GRADIO.cve == "CVE-2026-134825"
 
@@ -11754,6 +11801,1126 @@ def test_newsletters_audited_get_has_no_body(monkeypatch):
     assert NEWSLETTERS_README in rows[-1]["url"]
     assert "body" not in rows[-1]
     assert urlparse(rows[-1]["url"]).query == ""
+
+
+
+# --- WPGuppy Lite (CVE-2026-107654) -----------------------------------------
+
+WPGUPPY_README = "/wp-content/plugins/wpguppy-lite/readme.txt"
+
+
+def _wpguppy_readme(tag=None):
+    lines = [
+        "=== One to one user Chat by WPGuppy ===",
+        "Contributors: amentotechpvtltd",
+        "Requires at least: 6.0",
+        "Tested up to: 7.1",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "WPGuppy is a WordPress chat plugin.",
+        "",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _assert_wpguppy_one_get(transport):
+    assert transport.calls == [("GET", WPGUPPY_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    blob = transport.calls[0][1].lower()
+    assert "userid" not in blob
+    for banned in ("select ", "union ", "sleep(", "benchmark(", "'", '"', "--"):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag", ["1.1.6", "1.1.5", "1.1.0", "1.1", "1.0"])
+def test_wpguppy_affected_version_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200, "content_type": "text/plain", "body": _wpguppy_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = WPGUPPY_LITE.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_wpguppy_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == f"wpguppy-lite:{tag}"
+    assert "likely vulnerable" in found[0]["title"].lower()
+    assert UNCONFIRMED in found[0]["title"]
+    assert UNCONFIRMED in found[0]["evidence"]
+    assert "CVE-2026-107654" in found[0]["evidence"]
+    assert "1.1.7" in found[0]["fix"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "userId" in found[0]["evidence"]
+    blob = json.dumps(found).lower()
+    assert "proven" not in blob
+    assert "select " not in blob
+    assert "union " not in blob
+    assert "sleep(" not in blob
+
+
+@pytest.mark.parametrize("tag", ["1.1.7", "1.1.8", "1.2.0", "2.0.0"])
+def test_wpguppy_fixed_version_is_not_detected(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200, "content_type": "text/plain", "body": _wpguppy_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    assert WPGUPPY_LITE.run({}, _ctx()) == []
+    _assert_wpguppy_one_get(transport)
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "latest", "1.1.6beta"])
+def test_wpguppy_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _wpguppy_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = WPGUPPY_LITE.run({}, _ctx())
+    _assert_wpguppy_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "wpguppy-lite:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+    assert "CVE-2026-107654" in found[0]["evidence"]
+
+
+def test_wpguppy_changelog_without_stable_tag_is_unknown(monkeypatch):
+    body = _wpguppy_readme(None) + "== Changelog ==\n= 1.1.6 =\n* older notes\n"
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = WPGUPPY_LITE.run({}, _ctx())
+    _assert_wpguppy_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "wpguppy-lite:unknown"
+    assert "likely vulnerable" not in json.dumps(found).lower()
+
+
+def test_wpguppy_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert WPGUPPY_LITE.run({}, _ctx()) == []
+    _assert_wpguppy_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 1.1.6\n",
+    "<!doctype html><html><head><title>WPGuppy</title></head>"
+    "<body>One to one user Chat by WPGuppy Stable tag: 1.1.6</body></html>",
+    "=== Some Other Plugin ===\nContributors: amentotechpvtltd\nStable tag: 1.1.6\n",
+    "=== WPGuppy ===\nContributors: someone-else\nStable tag: 1.1.6\n",
+])
+def test_wpguppy_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[WPGUPPY_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert WPGUPPY_LITE.run({}, _ctx()) == []
+    _assert_wpguppy_one_get(transport)
+
+
+def test_wpguppy_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        return _Resp(
+            body=_wpguppy_readme("1.1.6").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_wpguppy_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = WPGUPPY_LITE.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == WPGUPPY_README
+    assert sent.query == ""
+    assert "userid" not in sent.path.lower()
+    assert "userId" not in seen["urls"][0]
+    assert found and found[0]["severity"] == "critical"
+    assert found[0]["check"]["match"] == "wpguppy-lite:1.1.6"
+    assert "likely vulnerable" in found[0]["title"].lower()
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert WPGUPPY_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert "userid" not in rows[-1]["url"].lower()
+    assert urlparse(rows[-1]["url"]).query == ""
+    text = (ROOT / "agents" / "cve_checks" / "wpguppy_lite.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "requests." not in text
+    assert "http.client" not in text
+    assert "userId" in WPGUPPY_LITE.does_not_send
+    assert "SQL" in WPGUPPY_LITE.does_not_send
+    for banned in ("UNION SELECT", "SLEEP(", "guppy_guest_account", "userType"):
+        assert banned not in text
+
+
+def test_wpguppy_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_wpguppy_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                WPGUPPY_LITE.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+# --- MxChat (CVE-2026-110662) -----------------------------------------------
+
+MXCHAT_README = "/wp-content/plugins/mxchat-basic/readme.txt"
+
+
+def _mxchat_readme(tag=None, changelog=None):
+    lines = [
+        "=== MxChat - AI Chatbot & Content Generation for WordPress ===",
+        "Contributors: mxchat",
+        "Requires at least: 5.3",
+        "Author: [MxChat](https://mxchat.ai)",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "",
+        "Upload the `mxchat-basic` folder to the `/wp-content/plugins/` directory.",
+        "",
+        "== Changelog ==",
+    ])
+    if changelog is not None:
+        lines.append(f"= {changelog} - October 10, 2026 =")
+        lines.append("* Older note that must not override the Stable tag.")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_mxchat_one_get(transport):
+    assert transport.calls == [("GET", MXCHAT_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    for banned in ("admin-ajax", "feedback", "transcript", "<script", "onerror", "javascript:"):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag", ["3.2.25", "3.2.24", "3.2.0", "3.2", "1.0.0"])
+def test_mxchat_affected_version_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[MXCHAT_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _mxchat_readme(tag, changelog="3.2.29"),
+    }
+    _install(monkeypatch, transport)
+    found = MXCHAT.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_mxchat_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == f"mxchat:{tag}"
+    assert "likely vulnerable" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-110662" in found[0]["title"]
+    assert "3.2.26" in found[0]["fix"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "medium-high" in found[0]["evidence"]
+    blob = json.dumps(found).lower()
+    assert "likely vulnerable" in blob
+    assert "<script" not in blob
+    assert "onerror" not in blob
+    assert "javascript:" not in blob
+    assert "admin-ajax" not in blob
+    assert "proven" not in blob
+
+
+@pytest.mark.parametrize("tag", ["3.2.26", "3.2.27", "3.2.29", "3.3.0", "4.0.0"])
+def test_mxchat_fixed_and_newer_versions_are_not_detected(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[MXCHAT_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _mxchat_readme(tag, changelog="3.2.25"),
+    }
+    _install(monkeypatch, transport)
+    assert MXCHAT.run({}, _ctx()) == []
+    _assert_mxchat_one_get(transport)
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "latest", "3.2.25-beta"])
+def test_mxchat_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[MXCHAT_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _mxchat_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = MXCHAT.run({}, _ctx())
+    _assert_mxchat_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "mxchat:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["evidence"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+    assert "CVE-2026-110662" in found[0]["evidence"]
+
+
+def test_mxchat_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[MXCHAT_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert MXCHAT.run({}, _ctx()) == []
+    _assert_mxchat_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 3.2.25\n",
+    "<!doctype html><html><head><title>MxChat</title></head>"
+    "<body>Contributors: mxchat Stable tag: 3.2.25</body></html>",
+    "=== Some Other Plugin ===\nContributors: mxchat\nStable tag: 3.2.25\n",
+    "=== MxChat ===\nContributors: someone-else\nStable tag: 3.2.25\n",
+])
+def test_mxchat_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[MXCHAT_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert MXCHAT.run({}, _ctx()) == []
+    _assert_mxchat_one_get(transport)
+
+
+def test_mxchat_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        return _Resp(
+            body=_mxchat_readme("3.2.25").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_mxchat_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = MXCHAT.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == MXCHAT_README
+    assert sent.query == ""
+    assert sent.scheme in ("http", "https")
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "mxchat:3.2.25"
+    assert "likely vulnerable" in found[0]["title"]
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert MXCHAT_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
+    assert "feedback" not in rows[-1]["url"].lower()
+    assert "admin-ajax" not in rows[-1]["url"].lower()
+
+
+def test_mxchat_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_mxchat_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                MXCHAT.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_mxchat_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "mxchat.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "requests." not in text
+    for banned in ("<?php", "php://", "../", "multipart", "<script", "onerror", "javascript:"):
+        assert banned not in text
+    assert MXCHAT.id == "mxchat"
+    assert MXCHAT.cve == "CVE-2026-110662"
+    assert MXCHAT.agent == "misconfig"
+    assert "3.2.26" in MXCHAT.fixed
+    assert "3.2.25" in MXCHAT.fixed
+    assert "not CISA KEV" in text
+    assert "Patchstack" in text
+
+
+# --- JetFormBuilder (CVE-2026-4373) -----------------------------------------
+
+JETFORM_README = "/wp-content/plugins/jetformbuilder/readme.txt"
+
+
+def _jetform_readme(tag=None, *, changelog=""):
+    lines = [
+        "=== JetFormBuilder — Dynamic Blocks Form Builder ===",
+        "Contributors: crocoblock, mjhead, hugreed",
+        "Requires at least: 6.1",
+        "Tested up to: 7.0",
+        "Requires PHP: 7.0",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "License: GPLv2 or later",
+        "",
+        "Advanced form builder plugin for Gutenberg.",
+        "",
+    ])
+    return "\n".join(lines) + changelog
+
+
+def _assert_jetform_one_get(transport):
+    assert transport.calls == [("GET", JETFORM_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    for banned in (
+        "wp-config", "admin-ajax", "wp-json", "upload", "media-field",
+        "wp-admin", "<?php",
+    ):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag", [
+    "3.5.6.2",
+    "3.5.6.1",
+    "3.5.6.0",
+    "3.5.6",
+    "3.5.5",
+    "3.0.0",
+    "1.0",
+])
+def test_jetformbuilder_affected_stable_tag_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[JETFORM_README] = {
+        "status": 200, "content_type": "text/plain", "body": _jetform_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = JETFORMBUILDER.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_jetform_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["id"] == "jetformbuilder"
+    assert found[0]["check"]["match"] == f"jetformbuilder:{tag}"
+    assert "likely vulnerable" in found[0]["title"]
+    assert "likely vulnerable" in found[0]["evidence"]
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-4373" in found[0]["title"]
+    assert "3.5.6.3" in found[0]["fix"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "Media Field" in found[0]["evidence"]
+    blob = json.dumps(found).lower()
+    assert "proven" not in blob
+    assert "../" not in blob
+
+
+@pytest.mark.parametrize("tag", [
+    "3.5.6.3",
+    "3.5.6.4",
+    "3.5.6.10",
+    "3.5.7",
+    "3.6.8.2",
+    "4.0.0",
+])
+def test_jetformbuilder_fixed_and_newer_versions_are_not_detected(monkeypatch, tag):
+    transport = Transport()
+    body = _jetform_readme(tag) + "\n**3.5.6.2**\n- FIX: older release\n"
+    transport.routes[JETFORM_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = JETFORMBUILDER.run({}, _ctx())
+    _assert_jetform_one_get(transport)
+    assert found == []
+    assert "likely vulnerable" not in json.dumps(found).lower()
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "3.5.6.2-beta", "3.5.6.2.1", "latest"])
+def test_jetformbuilder_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    body = _jetform_readme(tag)
+    if tag is None:
+        body += "\n**3.5.6.2**\n- changelog only\n"
+    transport.routes[JETFORM_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = JETFORMBUILDER.run({}, _ctx())
+    _assert_jetform_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "jetformbuilder:unknown"
+    assert "likely vulnerable" not in json.dumps(found).lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+    assert "CVE-2026-4373" in found[0]["evidence"]
+
+
+def test_jetformbuilder_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[JETFORM_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert JETFORMBUILDER.run({}, _ctx()) == []
+    _assert_jetform_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "not a readme",
+    "Stable tag: 3.5.6.2\n",
+    "<!doctype html><html><head><title>JetFormBuilder</title></head>"
+    "<body>Stable tag: 3.5.6.2</body></html>",
+    "=== Some Other Plugin ===\nContributors: someone\nStable tag: 3.5.6.2\n",
+    "JetFormBuilder is mentioned here.\nStable tag: 3.5.6.2\n",
+])
+def test_jetformbuilder_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[JETFORM_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert JETFORMBUILDER.run({}, _ctx()) == []
+    _assert_jetform_one_get(transport)
+
+
+def test_jetformbuilder_crlf_stable_tag_keeps_four_parts():
+    from agents.cve_checks.jetformbuilder import affected, is_plugin_readme, stable_tag
+
+    body = _jetform_readme("3.5.6.2").replace("\n", "\r\n")
+    assert is_plugin_readme(body) is True
+    assert stable_tag(body) == (3, 5, 6, 2)
+    assert affected((3, 5, 6, 2)) is True
+    assert affected((3, 5, 6, 1)) is True
+    assert affected((3, 5, 6)) is True
+    assert affected((3, 5, 6, 3)) is False
+    assert affected((3, 5, 6, 10)) is False
+    assert affected((3, 5, 7)) is False
+    assert affected((3, 6, 8, 2)) is False
+    assert stable_tag(_jetform_readme("3.5.6.2.1")) is None
+    assert stable_tag(_jetform_readme("3.5.6.2-beta")) is None
+    assert stable_tag(_jetform_readme("trunk")) is None
+    assert stable_tag(_jetform_readme(None)) is None
+
+
+def test_jetformbuilder_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": [], "headers": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        seen["headers"].append({k.lower(): v for k, v in req.header_items()})
+        return _Resp(
+            body=_jetform_readme("3.5.6.2").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_jetformbuilder_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = JETFORMBUILDER.run({}, _ctx(session={"cookie": "do-not-send"}))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == JETFORM_README
+    assert sent.query == ""
+    assert sent.scheme in ("http", "https")
+    joined = " ".join(seen["headers"][0].values()).lower()
+    assert "cookie" not in seen["headers"][0]
+    assert "x-forwarded" not in joined
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "jetformbuilder:3.5.6.2"
+    assert "likely vulnerable" in found[0]["title"]
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert JETFORM_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
+    assert "wp-config" not in rows[-1]["url"].lower()
+
+
+def test_jetformbuilder_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_jetformbuilder_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                JETFORMBUILDER.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_jetformbuilder_check_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "jetformbuilder.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "requests." not in text
+    assert "http.client" not in text
+    for banned in ("<?php", "php://", "../", "multipart", "SLEEP(", "UNION SELECT", "O:"):
+        assert banned not in text
+    assert JETFORMBUILDER.id == "jetformbuilder"
+    assert JETFORMBUILDER.cve == "CVE-2026-4373"
+    assert JETFORMBUILDER.agent == "misconfig"
+    assert "3.5.6.3" in JETFORMBUILDER.fixed
+    assert "3.5.6.2" in JETFORMBUILDER.fixed
+    assert "Media Field" in JETFORMBUILDER.does_not_send
+    assert "form" in JETFORMBUILDER.does_not_send.lower()
+    assert "No request body" in JETFORMBUILDER.sends
+
+
+# --- Ninja Forms (CVE-2026-109997 / CVE-2026-110899) ------------------------
+
+NINJA_FORMS_README = "/wp-content/plugins/ninja-forms/readme.txt"
+
+
+def _ninja_forms_readme(tag=None):
+    lines = [
+        "=== Ninja Forms - Contact Form Builder with Calculators, "
+        "Quizzes, Signatures & AI Form Builder ===",
+        "Contributors: wpninjasllc, kstover",
+        "Requires at least: 6.9",
+        "Tested up to: 7.1",
+        "Free WordPress form builder.",
+    ]
+    if tag is not None:
+        lines.insert(4, f"Stable tag: {tag}")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_ninja_forms_one_get(transport):
+    assert transport.calls == [("GET", NINJA_FORMS_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    blob = transport.calls[0][1].lower()
+    for banned in (
+        "formdata", "nf_ajax", "admin-ajax", "/wp-admin",
+        "ninja-forms-uploads", "upload",
+    ):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag", ["3.15.5", "3.15.4", "3.15", "3.0.0", "1.0"])
+def test_ninja_forms_vulnerable_version_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200, "content_type": "text/plain", "body": _ninja_forms_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_ninja_forms_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == f"ninja-forms:{tag}"
+    assert "likely vulnerable" in found[0]["title"].lower()
+    assert "medium-high" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-109997" in found[0]["evidence"]
+    assert "CVE-2026-110899" in found[0]["evidence"]
+    assert "collision" in found[0]["evidence"].lower()
+    assert "formData.extra" in found[0]["evidence"]
+    assert "3.15.6" in found[0]["fix"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "cisa kev" not in found[0]["title"].lower()
+    blob = json.dumps(found).lower()
+    assert "proven" not in blob
+    assert "<script" not in blob
+    assert "ninja-forms-uploads" not in blob
+
+
+@pytest.mark.parametrize("tag", ["3.15.6", "3.15.7", "3.16.2", "4.0.0"])
+def test_ninja_forms_fixed_version_is_not_detected(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200, "content_type": "text/plain", "body": _ninja_forms_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS.run({}, _ctx()) == []
+    _assert_ninja_forms_one_get(transport)
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "3", "3.15.5-rc1"])
+def test_ninja_forms_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _ninja_forms_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS.run({}, _ctx())
+    _assert_ninja_forms_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "ninja-forms:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["evidence"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+    assert found[0]["severity"] != "high"
+
+
+def test_ninja_forms_changelog_without_stable_tag_is_unknown(monkeypatch):
+    body = (
+        "=== Ninja Forms ===\n"
+        "Contributors: kstover\n"
+        "Requires at least: 6.9\n"
+        "\n"
+        "== Changelog ==\n"
+        "= 3.15.5 (28 September 2026) =\n"
+        "* older note that must not be treated as the installed version\n"
+    )
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = NINJA_FORMS.run({}, _ctx())
+    _assert_ninja_forms_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["check"]["match"] == "ninja-forms:unknown"
+    assert "likely vulnerable" not in json.dumps(found).lower()
+
+
+def test_ninja_forms_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS.run({}, _ctx()) == []
+    _assert_ninja_forms_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 3.15.5\n",
+    "<!doctype html><html><head><title>Ninja Forms</title></head>"
+    "<body>Stable tag: 3.15.5</body></html>",
+    "=== Some Other Plugin ===\nContributors: kstover\nStable tag: 3.15.5\n",
+    "=== Ninja Forms - File Uploads ===\nContributors: kstover\n"
+    "Stable tag: 3.3.36\n",
+])
+def test_ninja_forms_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[NINJA_FORMS_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert NINJA_FORMS.run({}, _ctx()) == []
+    _assert_ninja_forms_one_get(transport)
+
+
+def test_ninja_forms_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": [], "headers": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        seen["headers"].append({k.lower(): v for k, v in req.header_items()})
+        return _Resp(
+            body=_ninja_forms_readme("3.15.5").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_ninja_forms_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = NINJA_FORMS.run({}, _ctx(session={"cookie": "do-not-send"}))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == NINJA_FORMS_README
+    assert sent.query == ""
+    assert "cookie" not in seen["headers"][0]
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "ninja-forms:3.15.5"
+    assert "likely vulnerable" in found[0]["title"].lower()
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert NINJA_FORMS_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
+    assert "formdata" not in rows[-1]["url"].lower()
+
+
+def test_ninja_forms_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_ninja_forms_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                NINJA_FORMS.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_ninja_forms_check_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "ninja_forms.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "http.client" not in text
+    assert "requests." not in text
+    assert NINJA_FORMS_README in text
+    assert "ninja-forms-uploads/changelog" not in text
+    assert NINJA_FORMS.id == "ninja-forms"
+    assert NINJA_FORMS.cve == "CVE-2026-109997 / CVE-2026-110899"
+    assert "3.15.6" in NINJA_FORMS.fixed
+    assert "through 3.15.5" in NINJA_FORMS.fixed
+    assert "collision" in text.lower()
+    assert "not CISA" in text or "not in the CISA" in text
+    assert "Patchstack" in text
+    for banned in ("<?php", "php://", "../", "multipart", "<script"):
+        assert banned not in text
+
+# --- GiveWP (CVE-2026-104405 / CVE-2026-82675) ------------------------------
+
+GIVEWP_README = "/wp-content/plugins/give/readme.txt"
+
+
+def _givewp_readme(tag=None, *, legacy=False):
+    title = (
+        "=== Give - Donation Plugin and Fundraising Platform ==="
+        if legacy
+        else "=== GiveWP - Donation Plugin and Fundraising Platform ==="
+    )
+    lines = [
+        title,
+        "Contributors: givewp, dlocc",
+        "Requires at least: 6.6",
+        "Donation plugin for WordPress.",
+    ]
+    if tag is not None:
+        lines.insert(2, f"Stable tag: {tag}")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_givewp_one_get(transport):
+    assert transport.calls == [("GET", GIVEWP_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    assert all(call[0] == "GET" and call[2] is None and call[3] is False for call in transport.calls)
+
+
+@pytest.mark.parametrize("tag", [
+    "4.17.0",
+    "4.17",
+    "4.16.7.2",
+    "4.0.0",
+    "3.14.1",
+    "2.5.0",
+])
+def test_givewp_affected_version_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200, "content_type": "text/plain", "body": _givewp_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = GIVEWP.run({}, _ctx())
+    _assert_givewp_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == f"givewp:{tag}"
+    assert "likely vulnerable" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-104405" in found[0]["title"]
+    assert "CVE-2026-82675" in found[0]["title"]
+    assert "CVE-2026-104405" in found[0]["evidence"]
+    assert "CVE-2026-82675" in found[0]["evidence"]
+    assert "4.18.0" in found[0]["fix"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "CISA KEV" not in found[0]["title"]
+    blob = json.dumps(found)
+    assert "meta_donor" not in blob
+    assert "wp_set_password" not in blob
+    assert "wp-login" not in blob
+    assert "<?php" not in blob
+
+
+def test_givewp_legacy_header_with_givewp_contributor_is_likely_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _givewp_readme("2.5.0", legacy=True),
+    }
+    _install(monkeypatch, transport)
+    found = GIVEWP.run({}, _ctx())
+    _assert_givewp_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "givewp:2.5.0"
+    assert "likely vulnerable" in found[0]["title"]
+
+
+@pytest.mark.parametrize("tag", [
+    "4.18.0",
+    "4.18",
+    "4.17.1",
+    "4.18.0.1",
+    "4.19.2.2",
+    "5.0.0",
+])
+def test_givewp_fixed_and_newer_versions_are_not_detected(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200, "content_type": "text/plain", "body": _givewp_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    assert GIVEWP.run({}, _ctx()) == []
+    _assert_givewp_one_get(transport)
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "4.17.0-beta"])
+def test_givewp_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _givewp_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = GIVEWP.run({}, _ctx())
+    _assert_givewp_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "givewp:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["evidence"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+
+
+def test_givewp_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert GIVEWP.run({}, _ctx()) == []
+    _assert_givewp_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 4.17.0\n",
+    "<!doctype html><html><head><title>GiveWP</title></head>"
+    "<body>GiveWP Stable tag: 4.17.0</body></html>",
+    "=== Some Other Plugin ===\nContributors: givewp\nStable tag: 4.17.0\n",
+    "=== Give - Donation Plugin and Fundraising Platform ===\n"
+    "Contributors: someone-else\nStable tag: 4.17.0\nRequires at least: 4.8\n",
+])
+def test_givewp_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert GIVEWP.run({}, _ctx()) == []
+    _assert_givewp_one_get(transport)
+
+
+def test_givewp_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        return _Resp(
+            body=_givewp_readme("4.17.0").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_givewp_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("auth"):
+            found = GIVEWP.run({}, _ctx(session={"cookie": "do-not-send"}))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == GIVEWP_README
+    assert sent.query == ""
+    assert sent.scheme in ("http", "https")
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "givewp:4.17.0"
+    assert "likely vulnerable" in found[0]["title"]
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "auth"
+    assert GIVEWP_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
+
+
+def test_givewp_kill_switch_before_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_givewp_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                GIVEWP.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_givewp_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "givewp.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "requests." not in text
+    assert "http.client" not in text
+    for banned in (
+        "<?php", "php://", "../", "multipart", "wp-login", "admin-ajax",
+        "meta_donor", "wp_set_password", "first_name",
+    ):
+        assert banned not in text
+    assert GIVEWP.id == "givewp"
+    assert GIVEWP.agent == "auth"
+    assert "donor" in GIVEWP.does_not_send
+    assert "registration" in GIVEWP.does_not_send
+    assert "login" in GIVEWP.does_not_send
+    assert "4.18.0" in GIVEWP.fixed
 
 
 # --- Gradio (CVE-2026-134825) -----------------------------------------------
