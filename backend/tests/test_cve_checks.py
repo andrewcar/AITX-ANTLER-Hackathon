@@ -73,6 +73,7 @@ from agents.cve_checks.miniorange_otp import CHECK as MINIORANGE_OTP
 from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.simple_shopping_cart import CHECK as SIMPLE_SHOPPING_CART
 from agents.cve_checks.newsletters import CHECK as NEWSLETTERS
+from agents.cve_checks.jetformbuilder import CHECK as JETFORMBUILDER
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
 from agents.cve_checks.rtmedia import CHECK as RTMEDIA
@@ -360,6 +361,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
     assert paths.count("/wp-content/plugins/latepoint/readme.txt") == 1
     assert paths.count("/wp-content/plugins/miniorange-otp-verification/readme.txt") == 1
     assert paths.count("/wp-content/plugins/newsletters-lite/readme.txt") == 1
+    assert paths.count("/wp-content/plugins/jetformbuilder/readme.txt") == 1
+    assert all(
+        path == "/wp-content/plugins/jetformbuilder/readme.txt" or "jetformbuilder" not in path
+        for path in paths
+    )
+    assert "wp-config" not in blob.lower()
     assert paths.count("/wp-content/plugins/local-sync/readme.txt") == 1
     # SliceWP only probes readme when the plugin path was already in crawled HTML.
     assert paths.count("/wp-content/plugins/slicewp/readme.txt") == 0
@@ -2932,25 +2939,26 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "newsletters"
-    assert ids[-2] == "simple-shopping-cart"
-    assert ids[-3] == "miniorange-otp"
-    assert ids[-4] == "soledad-theme"
-    assert ids[-5] == "dokan"
-    assert ids[-6] == "rtmedia"
-    assert ids[-7] == "monai-label"
-    assert ids[-8] == "nginx2root"
-    assert ids[-9] == "php-nov2026"
-    assert ids[-10] == "apache-roller"
-    assert ids[-11] == "redcap"
-    assert ids[-12] == "drupal-install"
-    assert ids[-13] == "litellm-guardrail"
-    assert ids[-14] == "mercury"
-    assert ids[-15] == "confluence-axis"
-    assert ids[-16] == "ultra-addons-cf7"
-    assert ids[-17] == "estatik"
-    assert ids[-18] == "automatorwp-webhooks"
-    assert ids[-19] == "bricksforge"
+    assert ids[-1] == "jetformbuilder"
+    assert ids[-2] == "newsletters"
+    assert ids[-3] == "simple-shopping-cart"
+    assert ids[-4] == "miniorange-otp"
+    assert ids[-5] == "soledad-theme"
+    assert ids[-6] == "dokan"
+    assert ids[-7] == "rtmedia"
+    assert ids[-8] == "monai-label"
+    assert ids[-9] == "nginx2root"
+    assert ids[-10] == "php-nov2026"
+    assert ids[-11] == "apache-roller"
+    assert ids[-12] == "redcap"
+    assert ids[-13] == "drupal-install"
+    assert ids[-14] == "litellm-guardrail"
+    assert ids[-15] == "mercury"
+    assert ids[-16] == "confluence-axis"
+    assert ids[-17] == "ultra-addons-cf7"
+    assert ids[-18] == "estatik"
+    assert ids[-19] == "automatorwp-webhooks"
+    assert ids[-20] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
@@ -2958,9 +2966,10 @@ def test_btcpay_registry_keeps_existing_checks():
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
         "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
         "soledad-theme", "miniorange-otp", "simple-shopping-cart", "newsletters",
+        "jetformbuilder",
     ):
         assert required in ids
-    assert ids[-20] == "btcpay-server"
+    assert ids[-21] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2989,6 +2998,8 @@ def test_btcpay_registry_keeps_existing_checks():
     assert MINIORANGE_OTP.agent == "auth"
     assert MINIORANGE_OTP.cve == "CVE-2026-129073"
     assert NEWSLETTERS.agent == "misconfig"
+    assert JETFORMBUILDER.agent == "misconfig"
+    assert JETFORMBUILDER.cve == "CVE-2026-4373"
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -11743,3 +11754,247 @@ def test_newsletters_audited_get_has_no_body(monkeypatch):
     assert NEWSLETTERS_README in rows[-1]["url"]
     assert "body" not in rows[-1]
     assert urlparse(rows[-1]["url"]).query == ""
+
+
+# --- JetFormBuilder (CVE-2026-4373) -----------------------------------------
+
+JETFORM_README = "/wp-content/plugins/jetformbuilder/readme.txt"
+
+
+def _jetform_readme(tag=None, *, changelog=""):
+    lines = [
+        "=== JetFormBuilder — Dynamic Blocks Form Builder ===",
+        "Contributors: crocoblock, mjhead, hugreed",
+        "Requires at least: 6.1",
+        "Tested up to: 7.0",
+        "Requires PHP: 7.0",
+    ]
+    if tag is not None:
+        lines.append(f"Stable tag: {tag}")
+    lines.extend([
+        "License: GPLv2 or later",
+        "",
+        "Advanced form builder plugin for Gutenberg.",
+        "",
+    ])
+    return "\n".join(lines) + changelog
+
+
+def _assert_jetform_one_get(transport):
+    assert transport.calls == [("GET", JETFORM_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    blob = " ".join(call[1] for call in transport.calls).lower()
+    for banned in (
+        "wp-config", "admin-ajax", "wp-json", "upload", "media-field",
+        "wp-admin", "<?php",
+    ):
+        assert banned not in blob
+
+
+@pytest.mark.parametrize("tag", [
+    "3.5.6.2",
+    "3.5.6.1",
+    "3.5.6.0",
+    "3.5.6",
+    "3.5.5",
+    "3.0.0",
+    "1.0",
+])
+def test_jetformbuilder_affected_stable_tag_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[JETFORM_README] = {
+        "status": 200, "content_type": "text/plain", "body": _jetform_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = JETFORMBUILDER.run({}, _ctx(session={"cookie": "do-not-send"}))
+    _assert_jetform_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["id"] == "jetformbuilder"
+    assert found[0]["check"]["match"] == f"jetformbuilder:{tag}"
+    assert "likely vulnerable" in found[0]["title"]
+    assert "likely vulnerable" in found[0]["evidence"]
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-4373" in found[0]["title"]
+    assert "3.5.6.3" in found[0]["fix"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "Media Field" in found[0]["evidence"]
+    blob = json.dumps(found).lower()
+    assert "proven" not in blob
+    assert "../" not in blob
+
+
+@pytest.mark.parametrize("tag", [
+    "3.5.6.3",
+    "3.5.6.4",
+    "3.5.6.10",
+    "3.5.7",
+    "3.6.8.2",
+    "4.0.0",
+])
+def test_jetformbuilder_fixed_and_newer_versions_are_not_detected(monkeypatch, tag):
+    transport = Transport()
+    body = _jetform_readme(tag) + "\n**3.5.6.2**\n- FIX: older release\n"
+    transport.routes[JETFORM_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = JETFORMBUILDER.run({}, _ctx())
+    _assert_jetform_one_get(transport)
+    assert found == []
+    assert "likely vulnerable" not in json.dumps(found).lower()
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "3.5.6.2-beta", "3.5.6.2.1", "latest"])
+def test_jetformbuilder_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    body = _jetform_readme(tag)
+    if tag is None:
+        body += "\n**3.5.6.2**\n- changelog only\n"
+    transport.routes[JETFORM_README] = {
+        "status": 200, "content_type": "text/plain", "body": body,
+    }
+    _install(monkeypatch, transport)
+    found = JETFORMBUILDER.run({}, _ctx())
+    _assert_jetform_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "jetformbuilder:unknown"
+    assert "likely vulnerable" not in json.dumps(found).lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+    assert "CVE-2026-4373" in found[0]["evidence"]
+
+
+def test_jetformbuilder_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[JETFORM_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert JETFORMBUILDER.run({}, _ctx()) == []
+    _assert_jetform_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "not a readme",
+    "Stable tag: 3.5.6.2\n",
+    "<!doctype html><html><head><title>JetFormBuilder</title></head>"
+    "<body>Stable tag: 3.5.6.2</body></html>",
+    "=== Some Other Plugin ===\nContributors: someone\nStable tag: 3.5.6.2\n",
+    "JetFormBuilder is mentioned here.\nStable tag: 3.5.6.2\n",
+])
+def test_jetformbuilder_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[JETFORM_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert JETFORMBUILDER.run({}, _ctx()) == []
+    _assert_jetform_one_get(transport)
+
+
+def test_jetformbuilder_crlf_stable_tag_keeps_four_parts():
+    from agents.cve_checks.jetformbuilder import affected, is_plugin_readme, stable_tag
+
+    body = _jetform_readme("3.5.6.2").replace("\n", "\r\n")
+    assert is_plugin_readme(body) is True
+    assert stable_tag(body) == (3, 5, 6, 2)
+    assert affected((3, 5, 6, 2)) is True
+    assert affected((3, 5, 6, 1)) is True
+    assert affected((3, 5, 6)) is True
+    assert affected((3, 5, 6, 3)) is False
+    assert affected((3, 5, 6, 10)) is False
+    assert affected((3, 5, 7)) is False
+    assert affected((3, 6, 8, 2)) is False
+    assert stable_tag(_jetform_readme("3.5.6.2.1")) is None
+    assert stable_tag(_jetform_readme("3.5.6.2-beta")) is None
+    assert stable_tag(_jetform_readme("trunk")) is None
+    assert stable_tag(_jetform_readme(None)) is None
+
+
+def test_jetformbuilder_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": [], "headers": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        seen["headers"].append({k.lower(): v for k, v in req.header_items()})
+        return _Resp(
+            body=_jetform_readme("3.5.6.2").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_jetformbuilder_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("misconfig"):
+            found = JETFORMBUILDER.run({}, _ctx(session={"cookie": "do-not-send"}))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == JETFORM_README
+    assert sent.query == ""
+    assert sent.scheme in ("http", "https")
+    joined = " ".join(seen["headers"][0].values()).lower()
+    assert "cookie" not in seen["headers"][0]
+    assert "x-forwarded" not in joined
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "jetformbuilder:3.5.6.2"
+    assert "likely vulnerable" in found[0]["title"]
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "misconfig"
+    assert JETFORM_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
+    assert "wp-config" not in rows[-1]["url"].lower()
+
+
+def test_jetformbuilder_kill_switch_before_first_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_jetformbuilder_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                JETFORMBUILDER.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_jetformbuilder_check_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "jetformbuilder.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "requests." not in text
+    assert "http.client" not in text
+    for banned in ("<?php", "php://", "../", "multipart", "SLEEP(", "UNION SELECT", "O:"):
+        assert banned not in text
+    assert JETFORMBUILDER.id == "jetformbuilder"
+    assert JETFORMBUILDER.cve == "CVE-2026-4373"
+    assert JETFORMBUILDER.agent == "misconfig"
+    assert "3.5.6.3" in JETFORMBUILDER.fixed
+    assert "3.5.6.2" in JETFORMBUILDER.fixed
+    assert "Media Field" in JETFORMBUILDER.does_not_send
+    assert "form" in JETFORMBUILDER.does_not_send.lower()
+    assert "No request body" in JETFORMBUILDER.sends

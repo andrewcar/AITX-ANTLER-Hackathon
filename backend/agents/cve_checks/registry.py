@@ -22,6 +22,7 @@ from . import (
     gpustack_auth,
     gravity_forms,
     gravity_forms_chunked,
+    jetformbuilder,
     langflow,
     latepoint,
     litellm_guardrail,
@@ -117,6 +118,7 @@ CHECKS: tuple[CveCheck, ...] = (
     miniorange_otp.CHECK,
     simple_shopping_cart.CHECK,
     newsletters.CHECK,
+    jetformbuilder.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
