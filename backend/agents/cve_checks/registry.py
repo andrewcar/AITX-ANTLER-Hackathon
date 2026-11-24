@@ -32,6 +32,7 @@ from . import (
     mlflow_gateway,
     monai_label,
     newsletters,
+    wpguppy_lite,
     nextjs,
     nextjs_nov2026,
     nginx2root,
@@ -117,6 +118,7 @@ CHECKS: tuple[CveCheck, ...] = (
     miniorange_otp.CHECK,
     simple_shopping_cart.CHECK,
     newsletters.CHECK,
+    wpguppy_lite.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
