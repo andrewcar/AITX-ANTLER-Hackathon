@@ -22,6 +22,7 @@ from . import (
     gpustack_auth,
     gravity_forms,
     gravity_forms_chunked,
+    jetformbuilder,
     langflow,
     latepoint,
     litellm_guardrail,
@@ -31,7 +32,9 @@ from . import (
     metabase,
     mlflow_gateway,
     monai_label,
+    mxchat,
     newsletters,
+    wpguppy_lite,
     nextjs,
     nextjs_nov2026,
     nginx2root,
@@ -118,6 +121,9 @@ CHECKS: tuple[CveCheck, ...] = (
     miniorange_otp.CHECK,
     simple_shopping_cart.CHECK,
     newsletters.CHECK,
+    wpguppy_lite.CHECK,
+    mxchat.CHECK,
+    jetformbuilder.CHECK,
     ninja_forms.CHECK,
 )
 
