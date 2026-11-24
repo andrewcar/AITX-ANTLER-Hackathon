@@ -73,6 +73,7 @@ from agents.cve_checks.miniorange_otp import CHECK as MINIORANGE_OTP
 from agents.cve_checks.dokan import CHECK as DOKAN
 from agents.cve_checks.simple_shopping_cart import CHECK as SIMPLE_SHOPPING_CART
 from agents.cve_checks.newsletters import CHECK as NEWSLETTERS
+from agents.cve_checks.givewp import CHECK as GIVEWP
 from agents.cve_checks.monai_label import server_version as monai_server_version
 from agents.cve_checks.monai_label import vulnerable as monai_vulnerable
 from agents.cve_checks.rtmedia import CHECK as RTMEDIA
@@ -505,6 +506,12 @@ def test_quiet_target_is_get_only_and_avoids_exploit_paths(monkeypatch):
         for path in paths
     )
     assert paths.count("/wp-content/plugins/wordpress-simple-paypal-shopping-cart/readme.txt") == 1
+    # GiveWP always reads the public plugin readme and nothing else.
+    assert paths.count("/wp-content/plugins/give/readme.txt") == 1
+    assert all(
+        path == "/wp-content/plugins/give/readme.txt" or "/plugins/give/" not in path
+        for path in paths
+    )
 
 
 # --- PHP2Shell --------------------------------------------------------------
@@ -2932,25 +2939,26 @@ def test_btcpay_refuses_forbidden_paths_without_a_request(monkeypatch, url):
 
 def test_btcpay_registry_keeps_existing_checks():
     ids = [check.id for check in CHECKS]
-    assert ids[-1] == "newsletters"
-    assert ids[-2] == "simple-shopping-cart"
-    assert ids[-3] == "miniorange-otp"
-    assert ids[-4] == "soledad-theme"
-    assert ids[-5] == "dokan"
-    assert ids[-6] == "rtmedia"
-    assert ids[-7] == "monai-label"
-    assert ids[-8] == "nginx2root"
-    assert ids[-9] == "php-nov2026"
-    assert ids[-10] == "apache-roller"
-    assert ids[-11] == "redcap"
-    assert ids[-12] == "drupal-install"
-    assert ids[-13] == "litellm-guardrail"
-    assert ids[-14] == "mercury"
-    assert ids[-15] == "confluence-axis"
-    assert ids[-16] == "ultra-addons-cf7"
-    assert ids[-17] == "estatik"
-    assert ids[-18] == "automatorwp-webhooks"
-    assert ids[-19] == "bricksforge"
+    assert ids[-1] == "givewp"
+    assert ids[-2] == "newsletters"
+    assert ids[-3] == "simple-shopping-cart"
+    assert ids[-4] == "miniorange-otp"
+    assert ids[-5] == "soledad-theme"
+    assert ids[-6] == "dokan"
+    assert ids[-7] == "rtmedia"
+    assert ids[-8] == "monai-label"
+    assert ids[-9] == "nginx2root"
+    assert ids[-10] == "php-nov2026"
+    assert ids[-11] == "apache-roller"
+    assert ids[-12] == "redcap"
+    assert ids[-13] == "drupal-install"
+    assert ids[-14] == "litellm-guardrail"
+    assert ids[-15] == "mercury"
+    assert ids[-16] == "confluence-axis"
+    assert ids[-17] == "ultra-addons-cf7"
+    assert ids[-18] == "estatik"
+    assert ids[-19] == "automatorwp-webhooks"
+    assert ids[-20] == "bricksforge"
     for required in (
         "php2shell", "wordpress-core", "yootheme-pro", "mlflow", "masteriyo-lms",
         "btcpay-server", "bricksforge", "automatorwp-webhooks", "estatik",
@@ -2958,9 +2966,10 @@ def test_btcpay_registry_keeps_existing_checks():
         "mercury", "litellm-guardrail", "drupal-install", "redcap", "apache-roller",
         "php-nov2026", "nginx2root", "monai-label", "rtmedia", "dokan",
         "soledad-theme", "miniorange-otp", "simple-shopping-cart", "newsletters",
+        "givewp",
     ):
         assert required in ids
-    assert ids[-20] == "btcpay-server"
+    assert ids[-21] == "btcpay-server"
     assert "ai-engine-upload" in ids
     assert ids.index("ai-engine-upload") == ids.index("ai-engine") + 1
     assert BTCPAY.agent == "secrets"
@@ -2989,6 +2998,10 @@ def test_btcpay_registry_keeps_existing_checks():
     assert MINIORANGE_OTP.agent == "auth"
     assert MINIORANGE_OTP.cve == "CVE-2026-129073"
     assert NEWSLETTERS.agent == "misconfig"
+    assert GIVEWP.agent == "auth"
+    assert GIVEWP.cve == "CVE-2026-104405 / CVE-2026-82675"
+    assert "4.18.0" in GIVEWP.fixed
+    assert "4.17.0" in GIVEWP.fixed
 
 
 def test_verifier_confirms_btcpay_then_rejects_a_patched_build():
@@ -11743,3 +11756,234 @@ def test_newsletters_audited_get_has_no_body(monkeypatch):
     assert NEWSLETTERS_README in rows[-1]["url"]
     assert "body" not in rows[-1]
     assert urlparse(rows[-1]["url"]).query == ""
+
+
+# --- GiveWP (CVE-2026-104405 / CVE-2026-82675) ------------------------------
+
+GIVEWP_README = "/wp-content/plugins/give/readme.txt"
+
+
+def _givewp_readme(tag=None, *, legacy=False):
+    title = (
+        "=== Give - Donation Plugin and Fundraising Platform ==="
+        if legacy
+        else "=== GiveWP - Donation Plugin and Fundraising Platform ==="
+    )
+    lines = [
+        title,
+        "Contributors: givewp, dlocc",
+        "Requires at least: 6.6",
+        "Donation plugin for WordPress.",
+    ]
+    if tag is not None:
+        lines.insert(2, f"Stable tag: {tag}")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_givewp_one_get(transport):
+    assert transport.calls == [("GET", GIVEWP_README, None, False)]
+    assert "?" not in transport.calls[0][1]
+    assert all(call[0] == "GET" and call[2] is None and call[3] is False for call in transport.calls)
+
+
+@pytest.mark.parametrize("tag", [
+    "4.17.0",
+    "4.17",
+    "4.16.7.2",
+    "4.0.0",
+    "3.14.1",
+    "2.5.0",
+])
+def test_givewp_affected_version_is_likely_vulnerable(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200, "content_type": "text/plain", "body": _givewp_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = GIVEWP.run({}, _ctx())
+    _assert_givewp_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == f"givewp:{tag}"
+    assert "likely vulnerable" in found[0]["title"]
+    assert UNCONFIRMED in found[0]["title"]
+    assert "CVE-2026-104405" in found[0]["title"]
+    assert "CVE-2026-82675" in found[0]["title"]
+    assert "CVE-2026-104405" in found[0]["evidence"]
+    assert "CVE-2026-82675" in found[0]["evidence"]
+    assert "4.18.0" in found[0]["fix"]
+    assert "not CISA KEV" in found[0]["evidence"]
+    assert "Patchstack" in found[0]["evidence"]
+    assert "CISA KEV" not in found[0]["title"]
+    blob = json.dumps(found)
+    assert "meta_donor" not in blob
+    assert "wp_set_password" not in blob
+    assert "wp-login" not in blob
+    assert "<?php" not in blob
+
+
+def test_givewp_legacy_header_with_givewp_contributor_is_likely_vulnerable(monkeypatch):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _givewp_readme("2.5.0", legacy=True),
+    }
+    _install(monkeypatch, transport)
+    found = GIVEWP.run({}, _ctx())
+    _assert_givewp_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "givewp:2.5.0"
+    assert "likely vulnerable" in found[0]["title"]
+
+
+@pytest.mark.parametrize("tag", [
+    "4.18.0",
+    "4.18",
+    "4.17.1",
+    "4.18.0.1",
+    "4.19.2.2",
+    "5.0.0",
+])
+def test_givewp_fixed_and_newer_versions_are_not_detected(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200, "content_type": "text/plain", "body": _givewp_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    assert GIVEWP.run({}, _ctx()) == []
+    _assert_givewp_one_get(transport)
+
+
+@pytest.mark.parametrize("tag", [None, "trunk", "4.17.0-beta"])
+def test_givewp_missing_or_unparseable_version_is_unknown(monkeypatch, tag):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200,
+        "content_type": "text/plain",
+        "body": _givewp_readme(tag),
+    }
+    _install(monkeypatch, transport)
+    found = GIVEWP.run({}, _ctx())
+    _assert_givewp_one_get(transport)
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+    assert found[0]["check"]["match"] == "givewp:unknown"
+    assert "unknown" in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["title"].lower()
+    assert "likely vulnerable" not in found[0]["evidence"].lower()
+    assert UNCONFIRMED not in found[0]["title"]
+    assert "Not a guess" in found[0]["evidence"]
+
+
+def test_givewp_404_is_not_detected(monkeypatch):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {"status": 404, "body": "missing"}
+    _install(monkeypatch, transport)
+    assert GIVEWP.run({}, _ctx()) == []
+    _assert_givewp_one_get(transport)
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "not a readme",
+    "Stable tag: 4.17.0\n",
+    "<!doctype html><html><head><title>GiveWP</title></head>"
+    "<body>GiveWP Stable tag: 4.17.0</body></html>",
+    "=== Some Other Plugin ===\nContributors: givewp\nStable tag: 4.17.0\n",
+    "=== Give - Donation Plugin and Fundraising Platform ===\n"
+    "Contributors: someone-else\nStable tag: 4.17.0\nRequires at least: 4.8\n",
+])
+def test_givewp_garbage_or_non_plugin_is_not_detected(monkeypatch, body):
+    transport = Transport()
+    transport.routes[GIVEWP_README] = {
+        "status": 200, "content_type": "text/html", "body": body,
+    }
+    _install(monkeypatch, transport)
+    assert GIVEWP.run({}, _ctx()) == []
+    _assert_givewp_one_get(transport)
+
+
+def test_givewp_one_get_has_no_body(monkeypatch):
+    seen = {"calls": 0, "methods": [], "data": [], "urls": []}
+
+    def opener(req, timeout=None):
+        seen["calls"] += 1
+        seen["methods"].append(req.get_method())
+        seen["data"].append(req.data)
+        seen["urls"].append(req.full_url)
+        return _Resp(
+            body=_givewp_readme("4.17.0").encode(),
+            headers=[("content-type", "text/plain")],
+        )
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_givewp_audit",
+    )
+    try:
+        with control.scope(lease), control.agent("auth"):
+            found = GIVEWP.run({}, _ctx(session={"cookie": "do-not-send"}))
+    finally:
+        control.release(lease.run_id)
+    assert seen["calls"] == 1
+    assert seen["methods"] == ["GET"]
+    assert seen["data"] == [None]
+    sent = urlparse(seen["urls"][0])
+    assert sent.path == GIVEWP_README
+    assert sent.query == ""
+    assert sent.scheme in ("http", "https")
+    assert found and found[0]["severity"] == "high"
+    assert found[0]["check"]["match"] == "givewp:4.17.0"
+    assert "likely vulnerable" in found[0]["title"]
+    import audit
+    rows = [row for row in audit.recent(20) if row["kind"] == "request"]
+    assert rows
+    assert rows[-1]["action"] == "GET"
+    assert rows[-1]["agent"] == "auth"
+    assert GIVEWP_README in rows[-1]["url"]
+    assert "body" not in rows[-1]
+    assert urlparse(rows[-1]["url"]).query == ""
+
+
+def test_givewp_kill_switch_before_request(monkeypatch):
+    def opener(_req, timeout=None):
+        raise AssertionError("kill switch did not stop the request")
+
+    monkeypatch.setattr(recon._no_redirect_opener, "open", opener)
+    lease = control.acquire(
+        target="http://127.0.0.1:8081/", actor="tester",
+        run_id="run_givewp_stop",
+    )
+    lease.stop()
+    try:
+        with control.scope(lease):
+            with pytest.raises(control.ScanStopped):
+                GIVEWP.run({}, _ctx())
+    finally:
+        control.release(lease.run_id)
+
+
+def test_givewp_source_is_one_readme_get():
+    text = (ROOT / "agents" / "cve_checks" / "givewp.py").read_text(encoding="utf-8")
+    assert text.count("fetch_path(") == 1
+    assert "fetch_path(ctx, README" in text
+    assert "post_brotli" not in text
+    assert "recon.post" not in text
+    assert "recon.send" not in text
+    assert "urlopen" not in text
+    assert "requests." not in text
+    assert "http.client" not in text
+    for banned in (
+        "<?php", "php://", "../", "multipart", "wp-login", "admin-ajax",
+        "meta_donor", "wp_set_password", "first_name",
+    ):
+        assert banned not in text
+    assert GIVEWP.id == "givewp"
+    assert GIVEWP.agent == "auth"
+    assert "donor" in GIVEWP.does_not_send
+    assert "registration" in GIVEWP.does_not_send
+    assert "login" in GIVEWP.does_not_send
+    assert "4.18.0" in GIVEWP.fixed
