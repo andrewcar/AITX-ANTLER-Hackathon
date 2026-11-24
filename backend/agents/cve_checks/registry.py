@@ -35,6 +35,7 @@ from . import (
     nextjs,
     nextjs_nov2026,
     nginx2root,
+    ninja_forms,
     ninja_forms_uploads,
     node_brotli,
     nodered,
@@ -117,6 +118,7 @@ CHECKS: tuple[CveCheck, ...] = (
     miniorange_otp.CHECK,
     simple_shopping_cart.CHECK,
     newsletters.CHECK,
+    ninja_forms.CHECK,
 )
 
 _ids = [check.id for check in CHECKS]
